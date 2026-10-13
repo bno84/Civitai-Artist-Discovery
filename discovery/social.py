@@ -191,10 +191,10 @@ class SocialClient:
             "removeFromCollectionIds": [],
         })
 
-    def remove_image_from_collection(self, image_id: int, collection_id: int) -> object:
-        return self.mutate("collection.saveItem", {
-            "type": "Image", "imageId": int(image_id), "collections": [],
-            "removeFromCollectionIds": [int(collection_id)],
+    def comment_on_image(self, image_id: int, content: str) -> object:
+        """Post one comment. ``content`` is the HTML Civitai's own editor produces."""
+        return self.mutate("commentv2.upsert", {
+            "entityId": int(image_id), "entityType": "image", "content": content,
         })
 
     def image_collection_ids(self, image_ids: list[int]) -> dict[int, set[int] | None]:

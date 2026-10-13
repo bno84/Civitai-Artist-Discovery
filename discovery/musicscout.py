@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import threading
 
+import html
+import time
 import urllib.parse
 
 from .civitai import normalize
@@ -51,7 +53,17 @@ MUSIC_MODELS = (
 
 # The account's own curated collection; videos can be added or removed from any queue.
 MUSIC_FOCUS = {"collectionId": 17980935, "name": "Music Focus 🎸",
-               "url": "https://civitai.red/collections/17980935"}
+               "url": "https://civitai.red/collections/17980935",
+               # The comment the owner leaves on every video they add, as plain text. The
+               # collection's name becomes a link when it is posted.
+               "commentTemplate": "Your track has Music Focus 🎸 and is added to the "
+                                  "collection! 🎧 Give it a listen and share more jams if you like."}
+FOCUS_LINK_TEXT = "Music Focus 🎸"
+# Membership is read from the collection itself, so anyone signed in sees the same
+# answer the owner does. Reread at most this often; an add made here updates it at once.
+FOCUS_TTL_SECONDS = 600
+FOCUS_PAGE_SIZE = 200
+FOCUS_MAX_PAGES = 50
 CDN_ROOT = "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA"
 
 QUEUES = (
@@ -121,6 +133,16 @@ def collection_entry(raw: dict) -> dict | None:
                   ("likeCount", "heartCount", "laughCount", "cryCount", "commentCount")},
     }
     return video_entry(listing)
+
+
+def focus_comment_html(text: str) -> str:
+    """Plain text to the HTML Civitai stores: one paragraph per line, the collection's
+    name linked the way the owner's own comments link it."""
+    link = (f'<a target="_blank" rel="ugc" href="{html.escape(MUSIC_FOCUS["url"])}">'
+            f'<strong>Music Focus</strong> 🎸</a>')
+    lines = [line.strip() for line in str(text).splitlines() if line.strip()]
+    return "".join(f"<p>{html.escape(line).replace(html.escape(FOCUS_LINK_TEXT), link)}</p>"
+                   for line in lines)
 
 
 class Feed:
@@ -249,6 +271,9 @@ class MusicScout:
         # counts here so a revisit shows them.
         self.served: dict[int, dict] = {}
         self.lock = threading.Lock()
+        self.focus_ids_cache: set[int] | None = None
+        self.focus_loaded_at = 0.0
+        self.focus_lock = threading.Lock()
 
     def _build(self, queue_id: str, per_creator: int, mask: int, allow) -> Queue:
         request = self.archive._request
@@ -284,6 +309,36 @@ class MusicScout:
         with self.lock:
             self.served.update((entry["id"], entry) for entry in result["items"])
         return {"queue": queue_id, "offset": offset, **result}
+
+    def focus_ids(self) -> set[int]:
+        """Every video id in Music Focus. Needs a signed-in client, but not the owner's."""
+        with self.focus_lock:
+            if self.focus_ids_cache is not None and \
+                    time.monotonic() - self.focus_loaded_at < FOCUS_TTL_SECONDS:
+                return set(self.focus_ids_cache)
+            client = self.social()
+            ids: set[int] = set()
+            cursor = None
+            for _ in range(FOCUS_MAX_PAGES):
+                payload = {"collectionId": MUSIC_FOCUS["collectionId"], "sort": "Recently Added",
+                           "period": "AllTime", "types": ["video"], "limit": FOCUS_PAGE_SIZE,
+                           "browsingLevel": 31}
+                if cursor:
+                    payload["cursor"] = cursor
+                value = client.query("image.getInfinite", payload)
+                value = value if isinstance(value, dict) else {}
+                items = value.get("items") if isinstance(value.get("items"), list) else []
+                ids.update(int(row["id"]) for row in items if isinstance(row, dict) and row.get("id"))
+                cursor = value.get("nextCursor")
+                if not cursor or not items:
+                    break
+            self.focus_ids_cache, self.focus_loaded_at = ids, time.monotonic()
+            return set(ids)
+
+    def mark_focus(self, image_id: int) -> None:
+        with self.focus_lock:
+            if self.focus_ids_cache is not None:
+                self.focus_ids_cache.add(int(image_id))
 
     def served_entry(self, image_id: int) -> dict | None:
         with self.lock:

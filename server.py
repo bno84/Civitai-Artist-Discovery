@@ -26,7 +26,7 @@ import traceback
 from discovery.civitai import API_LANE, CandidateCache
 from discovery.capture import AutoCapture
 from discovery.timemachine import TimeMachine
-from discovery.musicscout import MUSIC_FOCUS, MusicScout
+from discovery.musicscout import MUSIC_FOCUS, MusicScout, focus_comment_html
 from discovery.history import HistoryArchive, parse_day, previous_local_day
 from discovery.oauth import (CALLBACK_PORT, OAuthSetupError, client_info,
                              disconnect as oauth_disconnect, login as oauth_login,
@@ -193,12 +193,31 @@ def music_scout_client() -> SocialClient:
     return SocialClient()
 
 
-def music_focus_collection(client: SocialClient) -> dict:
-    collection = next((row for row in client.writable_image_collections(connected_user_id())
-                       if int(row["id"]) == MUSIC_FOCUS["collectionId"]), None)
-    if collection is None:
-        raise ValueError("The Music Focus collection is not one this account can add to")
-    return collection
+# Whether the signed-in account owns Music Focus, by user id. Only the owner may add to
+# it from here; everyone else sees its contents read-only.
+MUSIC_FOCUS_OWNER: dict[int, bool] = {}
+
+
+def music_focus_collection(client: SocialClient) -> dict | None:
+    """Music Focus, if the signed-in account owns it and Civitai lets it add images."""
+    user_id = connected_user_id()
+    if user_id is None:
+        return None
+    return next((row for row in client.writable_image_collections(user_id)
+                 if int(row["id"]) == MUSIC_FOCUS["collectionId"]
+                 and int(row.get("userId") or -1) == int(user_id)), None)
+
+
+def music_focus_editable() -> bool:
+    status = auth_status()
+    if not (status.get("collectionsWrite") and status.get("socialWrite")):
+        return False
+    user_id = connected_user_id()
+    if user_id is None:
+        return False
+    if user_id not in MUSIC_FOCUS_OWNER:
+        MUSIC_FOCUS_OWNER[user_id] = music_focus_collection(SocialClient()) is not None
+    return MUSIC_FOCUS_OWNER[user_id]
 
 
 def collected_image(image_id: int) -> bool:
@@ -1291,10 +1310,12 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Request between 1 and 100 image IDs")
                 if any(not MUSIC_SCOUT.served_entry(image_id) for image_id in image_ids):
                     raise ValueError("Only videos Music Scout has shown can be checked")
-                held = SocialClient().image_collection_ids(image_ids)
-                self.json_response({"collectionId": MUSIC_FOCUS["collectionId"], "images": {
-                    str(image_id): MUSIC_FOCUS["collectionId"] in ids
-                    for image_id, ids in held.items() if ids is not None}})
+                members = MUSIC_SCOUT.focus_ids()
+                try: editable = music_focus_editable()
+                except Exception: editable = False
+                self.json_response({"collectionId": MUSIC_FOCUS["collectionId"], "canAdd": editable,
+                                    "images": {str(image_id): image_id in members
+                                               for image_id in image_ids}})
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Music Focus status", error)
             return
@@ -1883,25 +1904,43 @@ class Handler(BaseHTTPRequestHandler):
                 request_app_shutdown(self.server)
                 return
             if parsed.path == "/api/music/focus":
-                if not auth_status().get("collectionsWrite"):
-                    self.json_response({"error": "Sign out and back in once to allow collection changes."}, 403)
-                    return
+                # Adding only. Removing is destructive and stays on Civitai, where the
+                # owner also leaves a reason.
+                if not music_focus_editable():
+                    raise PermissionError("Only the owner of Music Focus can add to it")
                 image_id = int(body.get("imageId"))
-                active = body.get("active")
-                if not isinstance(active, bool):
-                    raise ValueError("active must be true or false")
+                comment = body.get("comment")
+                if not isinstance(comment, str) or not comment.strip() or len(comment) > 2000:
+                    raise ValueError("A comment of up to 2,000 characters is required")
                 if not MUSIC_SCOUT.served_entry(image_id):
                     raise ValueError("Only videos Music Scout has shown can be saved")
                 client = SocialClient()
                 collection = music_focus_collection(client)
-                if active:
+                if collection is None:
+                    raise PermissionError("Only the owner of Music Focus can add to it")
+                held = client.image_collection_ids([image_id]).get(image_id) or set()
+                if collection["id"] in held:
+                    MUSIC_SCOUT.mark_focus(image_id)
+                    self.json_response({"imageId": image_id, "inCollection": True,
+                                        "commented": False, "alreadyIn": True})
+                    return
+                # The comment goes first: a video must not land in the collection without
+                # one. If the add then fails, say so plainly rather than retrying, which
+                # would post the comment twice.
+                client.comment_on_image(image_id, focus_comment_html(comment))
+                try:
                     client.add_image_to_collection(image_id, collection)
-                else:
-                    client.remove_image_from_collection(image_id, collection["id"])
-                # Report what Civitai now holds rather than what was asked for.
+                except Exception as error:
+                    log_internal_error("Music Focus add after comment", error)
+                    self.json_response({"error": "Your comment was posted, but adding the video "
+                                        "to Music Focus failed. Add it on Civitai."}, 502)
+                    return
                 held = client.image_collection_ids([image_id]).get(image_id)
-                self.json_response({"imageId": image_id, "collectionId": collection["id"],
-                                    "inCollection": active if held is None else collection["id"] in held})
+                in_collection = True if held is None else collection["id"] in held
+                if in_collection:
+                    MUSIC_SCOUT.mark_focus(image_id)
+                self.json_response({"imageId": image_id, "inCollection": in_collection,
+                                    "commented": True, "alreadyIn": False})
                 return
             if parsed.path == "/api/collections/add":
                 if not auth_status().get("collectionsWrite"):

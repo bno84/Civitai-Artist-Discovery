@@ -1,4 +1,5 @@
 import { api } from './api.js';
+import { bindDialog } from './dialog.js';
 
 // Music Scout: pick a video queue, then skim it one video at a time with sound. Two video
 // elements take turns, so the next video is already buffering while the current one plays
@@ -34,7 +35,9 @@ export function mountMusicScout() {
     catalog: null, queue: null, perCreator: 3, items: [], index: 0, exhausted: false,
     loading: null, token: 0, active: false, refresh: false,
     // Reaction state is the account's own, so it is only known once signed in.
-    auth: { connected: false, socialWrite: false, collectionsWrite: false },
+    auth: { connected: false, socialWrite: false },
+    // Set by the server: only the collection's owner may add to it from here.
+    canAddFocus: false,
     reacted: new Map(), reacting: new Set(),
     // Whether each video is in the Music Focus collection, by id; absent means unknown.
     focus: new Map(), focusing: new Set(),
@@ -211,48 +214,86 @@ export function mountMusicScout() {
     const params = new URLSearchParams();
     for (const item of items) params.append('imageId', String(item.id));
     api(`/api/music/focus-status?${params}`).then(result => {
+      state.canAddFocus = !!result.canAdd;
       for (const [id, value] of Object.entries(result.images || {})) state.focus.set(id, !!value);
       renderReactions();
     }).catch(error => console.warn('Music Focus state could not be read', error));
   }
 
+  // Read-only for everyone but the collection's owner. Adding always posts a comment, so
+  // it goes through a confirmation; removing is left to Civitai, where a reason is given.
   function focusButton(item) {
     const name = state.catalog?.musicFocus?.name || 'Music Focus';
     const known = state.focus.has(String(item.id));
     const inside = state.focus.get(String(item.id)) === true;
-    const reason = !state.auth.connected ? `Sign in to save to ${name}`
-      : !state.auth.collectionsWrite ? 'Sign out and back in once to allow collection changes'
-      : !known ? `Checking ${name}…` : '';
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'ms-focus';
     button.classList.toggle('selected', inside);
-    button.setAttribute('aria-pressed', String(inside));
-    button.disabled = !!reason || state.focusing.has(String(item.id));
-    button.title = reason || (inside ? `In ${name}. Click to remove it.` : `Add to ${name}`);
-    button.setAttribute('aria-label', inside ? `In ${name}` : `Add to ${name}`);
     button.textContent = '🎸';
-    button.addEventListener('click', () => toggleFocus(item, !inside));
+    button.setAttribute('aria-label', inside ? `In ${name}` : `Not in ${name}`);
+    const readOnly = !state.auth.connected ? `Sign in to see what is in ${name}`
+      : !known ? `Checking ${name}…`
+      : !state.canAddFocus ? (inside ? `In ${name}` : `Not in ${name}`) : '';
+    if (readOnly) {
+      button.classList.add('read-only');
+      button.setAttribute('aria-disabled', 'true');
+      button.title = readOnly;
+      return button;
+    }
+    button.title = inside ? `In ${name}. Removing is done on Civitai.` : `Add to ${name}…`;
+    button.disabled = state.focusing.has(String(item.id));
+    button.addEventListener('click', () => (inside ? openRemove(item) : openAdd(item)));
     return button;
   }
 
-  async function toggleFocus(item, active) {
+  const addDialog = $('msFocusDialog');
+  const removeDialog = $('msRemoveDialog');
+  bindDialog(addDialog, { labelledBy: 'msFocusTitle', closeButtons: [$('msFocusClose'), $('msFocusCancel')] });
+  bindDialog(removeDialog, { labelledBy: 'msRemoveTitle', closeButtons: [$('msRemoveClose'), $('msRemoveCancel')] });
+  let addTarget = null;
+
+  function openAdd(item) {
+    addTarget = item;
+    $('msFocusSummary').textContent = `This posts the comment below on ${item.username}’s video, then adds the video to ${state.catalog.musicFocus.name}.`;
+    $('msFocusComment').value = state.catalog.musicFocus.commentTemplate || '';
+    $('msFocusError').classList.add('hidden');
+    $('msFocusConfirm').disabled = false;
+    addDialog.showModal();
+    $('msFocusComment').focus();
+  }
+
+  function openRemove(item) {
+    $('msRemoveOpen').href = item.civitaiUrl;
+    removeDialog.showModal();
+  }
+
+  $('msFocusForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    const item = addTarget;
+    const comment = $('msFocusComment').value.trim();
+    if (!item || !comment) return;
     const id = String(item.id);
-    if (state.focusing.has(id)) return;
     state.focusing.add(id);
+    $('msFocusConfirm').disabled = true;
     renderReactions();
     try {
       const result = await api('/api/music/focus', { method: 'POST',
-        body: JSON.stringify({ imageId: item.id, active }) });
+        body: JSON.stringify({ imageId: item.id, comment }) });
       state.focus.set(id, !!result.inCollection);
-      if (result.inCollection !== active) message('Civitai did not apply that change. Try again.');
+      addDialog.close();
+      message(result.alreadyIn ? 'That video was already in Music Focus; no comment was posted.'
+        : result.inCollection ? '' : 'The comment was posted, but Civitai does not list the video in Music Focus yet.');
     } catch (error) {
-      message(error.message);
+      $('msFocusError').textContent = error.message;
+      $('msFocusError').classList.remove('hidden');
+      // A failure after the comment was posted must not invite a second comment.
+      $('msFocusConfirm').disabled = /comment was posted/i.test(error.message);
     } finally {
       state.focusing.delete(id);
       renderReactions();
     }
-  }
+  });
 
   function renderReactions() {
     const host = $('msReactions');
@@ -425,8 +466,7 @@ export function mountMusicScout() {
 
   async function ensureCatalog() {
     api('/api/auth-status').then(auth => {
-      state.auth = { connected: !!auth.connected, socialWrite: !!auth.socialWrite,
-        collectionsWrite: !!auth.collectionsWrite };
+      state.auth = { connected: !!auth.connected, socialWrite: !!auth.socialWrite };
       const unknown = state.items.filter(item => !state.reacted.has(String(item.id)));
       for (let start = 0; start < unknown.length; start += PAGE) loadReactionState(unknown.slice(start, start + PAGE));
       const unchecked = state.items.filter(item => !state.focus.has(String(item.id)));

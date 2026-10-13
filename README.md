@@ -45,7 +45,9 @@ Windows-only.
   every latest video. Signed in, a fourth queue plays the Music Focus 🎸 collection in
   recently added order. Only videos are requested, the next one buffers while the
   current one plays, and a thumbnail strip shows the loaded queue. Reactions and a 🎸
-  button that adds or removes the video from Music Focus sit beside each video.
+  marker showing whether the video is in Music Focus sit beside each video. Only the
+  collection's owner can add from here, after confirming the comment that is posted
+  with it; removing is left to Civitai.
 - Provides **For you**, **Popular**, **New to you**, **Followed first**, and
   **Emerging first** views.
 - Ranks **Popular** by the sum of reactions across every visible image each artist posted

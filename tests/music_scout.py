@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from discovery.musicscout import MUSIC_FOCUS, MUSIC_MODELS, MusicScout
+from discovery.musicscout import MUSIC_FOCUS, MUSIC_MODELS, MusicScout, focus_comment_html
 
 CDN = "https://image.civitai.com/key"
 
@@ -140,5 +140,32 @@ except PermissionError:
     pass
 else:
     raise AssertionError("Music Focus must require sign-in")
+
+# -- the comment that goes with an add ----------------------------------------------
+posted = focus_comment_html(MUSIC_FOCUS["commentTemplate"] + "\n\n<b>Nice</b> & loud")
+assert posted.startswith('<p>Your track has <a target="_blank" rel="ugc" '
+                         'href="https://civitai.red/collections/17980935"><strong>Music Focus'
+                         '</strong> 🎸</a> and is added'), posted
+assert posted.endswith("<p>&lt;b&gt;Nice&lt;/b&gt; &amp; loud</p>"), posted
+assert posted.count("<p>") == 2, posted
+
+
+# -- membership comes from the collection itself, cached between pages -----------------
+class MemberSocial:
+    def __init__(self):
+        self.calls = 0
+
+    def query(self, procedure, payload):
+        self.calls += 1
+        if payload.get("cursor") is None:
+            return {"items": [{"id": 1}, {"id": 2}], "nextCursor": 5}
+        return {"items": [{"id": 3}], "nextCursor": None}
+
+
+members = MemberSocial()
+scout = MusicScout(FakeArchive({}), social=lambda: members)
+assert scout.focus_ids() == {1, 2, 3} and members.calls == 2
+scout.mark_focus(4)
+assert scout.focus_ids() == {1, 2, 3, 4} and members.calls == 2, "a fresh cache must not refetch"
 
 print("music scout queues: ok")
