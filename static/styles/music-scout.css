@@ -56,7 +56,10 @@
 .music-scout.ms-selected .ms-queues { gap: 6px; }
 .music-scout.ms-selected .ms-queue { flex: none; max-width: none; padding: 6px 14px; border-radius: var(--radius-pill); }
 .music-scout.ms-selected .ms-queue small { display: none; }
-.music-scout.ms-selected .ms-head .discovery-message:empty { display: none; }
+/* Messages get a fixed slot in that row, between the queues and the options, so
+   showing or clearing one never moves anything. */
+.music-scout.ms-selected .ms-head .discovery-message, .music-scout.ms-selected .ms-head .discovery-message:empty { display: block; order: 1; flex: 1 1 0; min-width: 0; min-height: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.music-scout.ms-selected .ms-options { order: 2; margin-left: 0; }
 
 /* Desktop: the whole player fits the window. --ms-top is where the section starts. */
 @media (min-width: 701px) {

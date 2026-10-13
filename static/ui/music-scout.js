@@ -517,12 +517,7 @@ export function mountMusicScout() {
         return;
       }
       let start = index ?? state.items.findIndex(item => !item.viewed);
-      if (index !== null || start === 0) message('');
-      else if (start > 0) {
-        const note = `Skipped ${start} ${start === 1 ? 'video' : 'videos'} you have already viewed.`;
-        message(note);
-        setTimeout(() => { if ($('msMessage').textContent === note) message(''); }, 6000);
-      }
+      if (start >= 0) message('');
       else {
         // Everything loaded so far was viewed: carry on from the end of it.
         start = state.items.length - 1;
