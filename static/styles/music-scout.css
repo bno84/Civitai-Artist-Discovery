@@ -14,7 +14,8 @@
 .ms-screen { position: relative; flex: 1; min-width: 0; height: max(260px, calc(100dvh - var(--header-h, 64px) - var(--tabs-h, 52px) - 200px)); border-radius: var(--radius-md); background: #000; overflow: hidden; }
 .ms-screen video { width: 100%; height: 100%; display: block; object-fit: contain; background: #000; }
 .ms-screen video[hidden] { display: none; }
-.ms-nav { flex: none; width: 52px; height: 52px; border: 0; border-radius: 50%; background: var(--surface-raised); color: var(--text); font-size: 34px; line-height: 1; cursor: pointer; }
+.ms-nav { flex: none; display: grid; place-items: center; width: 52px; height: 52px; padding: 0; border: 0; border-radius: 50%; background: var(--surface-raised); color: var(--text); cursor: pointer; }
+.ms-nav svg { width: 26px; height: 26px; }
 .ms-nav:hover:not(:disabled) { background: var(--accent-surface); }
 .ms-nav:disabled { opacity: .35; cursor: default; }
 .ms-sound { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); padding: 9px 16px; border: 0; border-radius: var(--radius-pill); background: #f0f1f3; color: #18191b; font-weight: 700; cursor: pointer; box-shadow: var(--shadow-popover); }
@@ -26,9 +27,9 @@
 .ms-reactions { background: transparent; backdrop-filter: none; padding: 0; }
 .ms-reactions button:disabled { cursor: default; opacity: .75; }
 .ms-reactions button.selected { background: var(--accent-surface); box-shadow: inset 0 0 0 1px var(--accent); }
-.ms-reactions .ms-focus { margin-left: 6px; padding: 6px 10px; border-left: 1px solid var(--line); border-radius: 0 7px 7px 0; font-size: 16px; filter: grayscale(1); opacity: .6; }
+.ms-reactions .ms-focus { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; margin-left: 8px; padding: 0 9px; border: 0; border-radius: 7px; line-height: 1; font-size: 16px; filter: grayscale(1); opacity: .6; }
 .ms-reactions .ms-focus:hover:not(:disabled), .ms-reactions .ms-focus.selected { filter: none; opacity: 1; }
-.ms-reactions .ms-focus.selected { background: var(--accent-surface); box-shadow: inset 0 0 0 1px var(--accent); border-radius: 7px; }
+.ms-reactions .ms-focus.selected { background: var(--accent-surface); box-shadow: inset 0 0 0 1px var(--accent); }
 .ms-meta-main a { color: var(--text); font-weight: 700; font-size: 16px; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ms-meta-main a:hover { color: var(--accent); }
 .ms-meta-main small { color: var(--muted); font-size: 13px; }
@@ -64,7 +65,8 @@
 }
 
 @media (max-width: 700px) {
-  .ms-nav { width: 40px; height: 40px; font-size: 26px; }
+  .ms-nav { width: 40px; height: 40px; }
+  .ms-nav svg { width: 22px; height: 22px; }
   .ms-stage { gap: 4px; }
   .ms-meta { padding: 0 4px; }
   .ms-screen { height: max(240px, calc(100dvh - var(--header-h, 64px) - var(--tabs-h, 52px) - 230px)); }
