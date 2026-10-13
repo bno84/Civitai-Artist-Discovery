@@ -1,0 +1,28 @@
+# Rootless Podman on desktop Linux: `podman compose up --build`.
+# A sandbox for one person on one desktop, not a way to host the app.
+name: civitai-artist-discovery
+services:
+  app:
+    build:
+      context: .
+      dockerfile: container/Containerfile
+    image: localhost/civitai-artist-discovery
+    container_name: civitai-artist-discovery
+    init: true
+    # SIGINT reaches the server's KeyboardInterrupt shutdown; SIGTERM would skip it.
+    stop_signal: SIGINT
+    # Civitai redirects sign-in to localhost:8765 and the app picks its own loopback
+    # port, so both must be the host's own loopback.
+    network_mode: host
+    # The D-Bus session only accepts the same user ID, and data/ stays owned by you.
+    userns_mode: keep-id
+    # SELinux otherwise blocks the container from the host's D-Bus socket.
+    security_opt:
+      - label=disable
+    environment:
+      DBUS_SESSION_BUS_ADDRESS: unix:path=/run/host-bus
+      HOME: /tmp
+      CIVITAI_OAUTH_CLIENT_ID: ${CIVITAI_OAUTH_CLIENT_ID:-}
+    volumes:
+      - ${XDG_RUNTIME_DIR:?run this from your desktop session}/bus:/run/host-bus
+      - ./data:/app/data
