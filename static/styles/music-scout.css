@@ -75,5 +75,14 @@
 .ms-focus-comment { display: grid; gap: 6px; }
 .ms-focus-comment span { font-weight: 700; }
 .ms-focus-comment small { color: var(--muted); font-size: 12px; }
-.ms-focus-comment textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel); color: var(--text); font: inherit; line-height: 1.45; resize: vertical; }
+.ms-comment-preview { padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel); line-height: 1.5; }
+.ms-comment-preview p { margin: 0 0 .6em; }
+.ms-comment-preview p:last-child { margin-bottom: 0; }
+.ms-comment-preview a { color: var(--accent); }
+.ms-focus-note { font-size: 13px; }
 .ms-dialog-link { display: inline-flex; align-items: center; padding: 10px 14px; border-radius: 9px; text-decoration: none; border: 1px solid #4a9f92; background: #1d5148; color: #eafffb; font-weight: 800; }
+.ms-dialog-link.secondary { border-color: var(--line); background: #22242a; color: var(--text); font-weight: 400; }
+.ms-focus-comment-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ms-copy { border: 1px solid var(--line); background: #22242a; color: var(--text); padding: 5px 10px; border-radius: 7px; font-size: 12px; cursor: pointer; }
+.ms-copy:hover { background: var(--surface-raised); }
+dialog.ms-focus-dialog { width: min(580px, 92vw); }

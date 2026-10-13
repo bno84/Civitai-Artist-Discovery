@@ -270,13 +270,16 @@ export function mountMusicScout() {
 
   function openAdd(item) {
     addTarget = item;
-    $('msFocusSummary').textContent = `This posts the comment below on ${item.username}’s video, then adds the video to ${state.catalog.musicFocus.name}.`;
-    $('msFocusComment').value = state.catalog.musicFocus.commentTemplate || '';
+    $('msFocusSummary').textContent = `Either post the default comment on ${item.username}’s video and add it to ${state.catalog.musicFocus.name}, or open it on Civitai to do both yourself.`;
+    // The app's own markup, shown exactly as it will be posted, link and all.
+    $('msFocusComment').innerHTML = state.catalog.musicFocus.commentHtml || '';
+    $('msFocusOpen').href = item.civitaiUrl;
     $('msFocusError').classList.add('hidden');
     $('msFocusConfirm').disabled = false;
+    $('msFocusCopy').textContent = 'Copy comment';
     pauseForDialog();
     addDialog.showModal();
-    $('msFocusComment').focus();
+    $('msFocusConfirm').focus();
   }
 
   function openRemove(item) {
@@ -285,18 +288,48 @@ export function mountMusicScout() {
     removeDialog.showModal();
   }
 
-  $('msFocusForm').addEventListener('submit', async event => {
-    event.preventDefault();
+  // Copies the comment as formatted HTML as well as text, so pasting into Civitai's
+  // comment editor keeps the link and the bold. The async clipboard needs a secure
+  // context; a LAN address is not one, so that falls back to copying a selection.
+  $('msFocusCopy').addEventListener('click', async () => {
+    const preview = $('msFocusComment');
+    const button = $('msFocusCopy');
+    let copied = false;
+    try {
+      if (!window.ClipboardItem || !navigator.clipboard?.write) throw new Error('unavailable');
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/html': new Blob([preview.innerHTML], { type: 'text/html' }),
+        'text/plain': new Blob([preview.innerText], { type: 'text/plain' }),
+      })]);
+      copied = true;
+    } catch (_) {
+      const selection = getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(preview);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      copied = document.execCommand('copy');
+      selection.removeAllRanges();
+    }
+    button.textContent = copied ? 'Copied ✓' : 'Copy failed';
+    setTimeout(() => { button.textContent = 'Copy comment'; }, 2000);
+  });
+
+  $('msFocusOpen').addEventListener('click', () => {
+    // Civitai takes over from here, in another tab: stay paused and step aside.
+    resumeAfterDialog = false;
+    addDialog.close();
+  });
+
+  $('msFocusConfirm').addEventListener('click', async () => {
     const item = addTarget;
-    const comment = $('msFocusComment').value.trim();
-    if (!item || !comment) return;
+    if (!item) return;
     const id = String(item.id);
     state.focusing.add(id);
     $('msFocusConfirm').disabled = true;
     renderReactions();
     try {
-      const result = await api('/api/music/focus', { method: 'POST',
-        body: JSON.stringify({ imageId: item.id, comment }) });
+      const result = await api('/api/music/focus', { method: 'POST', body: JSON.stringify({ imageId: item.id }) });
       state.focus.set(id, !!result.inCollection);
       addDialog.close();
       message(result.alreadyIn ? 'That video was already in Music Focus; no comment was posted.'

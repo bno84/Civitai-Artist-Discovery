@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import threading
 
-import html
 import time
 import urllib.parse
 
@@ -51,14 +50,17 @@ MUSIC_MODELS = (
     {"modelId": 2549270, "name": "ACE-Step Audio Gen", "url": "https://civitai.red/models/2549270"},
 )
 
-# The account's own curated collection; videos can be added or removed from any queue.
+# The account's own curated collection. Its owner can add a video from any queue.
 MUSIC_FOCUS = {"collectionId": 17980935, "name": "Music Focus 🎸",
                "url": "https://civitai.red/collections/17980935",
-               # The comment the owner leaves on every video they add, as plain text. The
-               # collection's name becomes a link when it is posted.
-               "commentTemplate": "Your track has Music Focus 🎸 and is added to the "
-                                  "collection! 🎧 Give it a listen and share more jams if you like."}
-FOCUS_LINK_TEXT = "Music Focus 🎸"
+               # The comment the owner leaves on every video they add, in the markup
+               # Civitai's own editor produced for it. The link to the collection is the
+               # point of the comment. It is posted exactly as is; anything different is
+               # written on Civitai itself.
+               "commentHtml": '<p>Your track has <a target="_blank" rel="ugc" '
+                              'href="https://civitai.red/collections/17980935"><strong>Music '
+                              'Focus</strong> 🎸</a> and is added to the collection! 🎧 Give it '
+                              'a listen and share more jams if you like.</p>'}
 # Membership is read from the collection itself, so anyone signed in sees the same
 # answer the owner does. Reread at most this often; an add made here updates it at once.
 FOCUS_TTL_SECONDS = 600
@@ -133,16 +135,6 @@ def collection_entry(raw: dict) -> dict | None:
                   ("likeCount", "heartCount", "laughCount", "cryCount", "commentCount")},
     }
     return video_entry(listing)
-
-
-def focus_comment_html(text: str) -> str:
-    """Plain text to the HTML Civitai stores: one paragraph per line, the collection's
-    name linked the way the owner's own comments link it."""
-    link = (f'<a target="_blank" rel="ugc" href="{html.escape(MUSIC_FOCUS["url"])}">'
-            f'<strong>Music Focus</strong> 🎸</a>')
-    lines = [line.strip() for line in str(text).splitlines() if line.strip()]
-    return "".join(f"<p>{html.escape(line).replace(html.escape(FOCUS_LINK_TEXT), link)}</p>"
-                   for line in lines)
 
 
 class Feed:

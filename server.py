@@ -26,7 +26,7 @@ import traceback
 from discovery.civitai import API_LANE, CandidateCache
 from discovery.capture import AutoCapture
 from discovery.timemachine import TimeMachine
-from discovery.musicscout import MUSIC_FOCUS, MusicScout, focus_comment_html
+from discovery.musicscout import MUSIC_FOCUS, MusicScout
 from discovery.history import HistoryArchive, parse_day, previous_local_day
 from discovery.oauth import (CALLBACK_PORT, OAuthSetupError, client_info,
                              disconnect as oauth_disconnect, login as oauth_login,
@@ -1904,14 +1904,11 @@ class Handler(BaseHTTPRequestHandler):
                 request_app_shutdown(self.server)
                 return
             if parsed.path == "/api/music/focus":
-                # Adding only. Removing is destructive and stays on Civitai, where the
-                # owner also leaves a reason.
+                # Adding only, always with the owner's default comment. A different
+                # comment, and any removal, is done on Civitai itself.
                 if not music_focus_editable():
                     raise PermissionError("Only the owner of Music Focus can add to it")
                 image_id = int(body.get("imageId"))
-                comment = body.get("comment")
-                if not isinstance(comment, str) or not comment.strip() or len(comment) > 2000:
-                    raise ValueError("A comment of up to 2,000 characters is required")
                 if not MUSIC_SCOUT.served_entry(image_id):
                     raise ValueError("Only videos Music Scout has shown can be saved")
                 client = SocialClient()
@@ -1927,7 +1924,7 @@ class Handler(BaseHTTPRequestHandler):
                 # The comment goes first: a video must not land in the collection without
                 # one. If the add then fails, say so plainly rather than retrying, which
                 # would post the comment twice.
-                client.comment_on_image(image_id, focus_comment_html(comment))
+                client.comment_on_image(image_id, MUSIC_FOCUS["commentHtml"])
                 try:
                     client.add_image_to_collection(image_id, collection)
                 except Exception as error:

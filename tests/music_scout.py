@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from discovery.musicscout import MUSIC_FOCUS, MUSIC_MODELS, MusicScout, focus_comment_html
+from discovery.musicscout import MUSIC_FOCUS, MUSIC_MODELS, MusicScout
 
 CDN = "https://image.civitai.com/key"
 
@@ -141,13 +141,9 @@ except PermissionError:
 else:
     raise AssertionError("Music Focus must require sign-in")
 
-# -- the comment that goes with an add ----------------------------------------------
-posted = focus_comment_html(MUSIC_FOCUS["commentTemplate"] + "\n\n<b>Nice</b> & loud")
-assert posted.startswith('<p>Your track has <a target="_blank" rel="ugc" '
-                         'href="https://civitai.red/collections/17980935"><strong>Music Focus'
-                         '</strong> 🎸</a> and is added'), posted
-assert posted.endswith("<p>&lt;b&gt;Nice&lt;/b&gt; &amp; loud</p>"), posted
-assert posted.count("<p>") == 2, posted
+# -- the default comment links to the collection, as the owner's own comments do -----
+assert ('<a target="_blank" rel="ugc" href="https://civitai.red/collections/17980935">'
+        '<strong>Music Focus</strong> 🎸</a>') in MUSIC_FOCUS["commentHtml"], MUSIC_FOCUS["commentHtml"]
 
 
 # -- membership comes from the collection itself, cached between pages -----------------
