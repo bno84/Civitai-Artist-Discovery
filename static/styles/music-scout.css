@@ -28,7 +28,6 @@
 .ms-meta-actions { display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 13px; }
 .ms-meta-actions a { color: var(--accent); text-decoration: none; }
 .ms-counter { font-variant-numeric: tabular-nums; }
-.ms-auto { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 
 .ms-strip { display: flex; gap: 6px; overflow-x: auto; padding: 4px 2px 8px; scrollbar-width: thin; }
 .ms-thumb { position: relative; flex: none; width: 96px; height: 64px; padding: 0; border: 2px solid transparent; border-radius: var(--radius-sm); background: #000; overflow: hidden; cursor: pointer; }

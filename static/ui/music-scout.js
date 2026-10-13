@@ -32,6 +32,8 @@ export function mountMusicScout() {
   let spare = $('msVideoB');
   for (const video of [current, spare]) {
     video.controls = true;
+    // Each video repeats until the reader moves on.
+    video.loop = true;
     video.playsInline = true;
     video.preload = 'none';
     video.addEventListener('volumechange', () => {
@@ -39,26 +41,17 @@ export function mountMusicScout() {
       state.muted = video.muted; state.volume = video.volume;
       localStorage.setItem(AUDIO_KEY, JSON.stringify({ muted: state.muted, volume: state.volume }));
     });
-    video.addEventListener('ended', () => {
-      if (video === current && $('msAutoNext').checked) step(1);
-    });
     video.addEventListener('error', () => {
       if (video !== current || !video.getAttribute('src')) return;
       showVideoError('This video could not be played. Press → for the next one.');
     });
   }
-  $('msAutoNext').checked = saved.autoNext === true;
 
   function remember() {
     sessionStorage.setItem(STATE_KEY, JSON.stringify({
       queue: state.queue, perCreator: state.perCreator, index: state.index,
-      autoNext: $('msAutoNext').checked,
     }));
   }
-  $('msAutoNext').addEventListener('change', () => {
-    current.loop = !$('msAutoNext').checked;
-    remember();
-  });
 
   function message(text) { $('msMessage').textContent = text || ''; }
   function showVideoError(text) {
@@ -83,7 +76,6 @@ export function mountMusicScout() {
   }
 
   function play(video) {
-    video.loop = !$('msAutoNext').checked;
     video.volume = state.volume;
     video.muted = state.muted;
     delete video.dataset.forcedMute;
