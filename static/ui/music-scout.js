@@ -34,7 +34,10 @@ export function mountMusicScout() {
     catalog: null, queue: null, perCreator: 3, items: [], index: 0, exhausted: false,
     loading: null, token: 0, active: false, refresh: false,
     // Reaction state is the account's own, so it is only known once signed in.
-    auth: { connected: false, socialWrite: false }, reacted: new Map(), reacting: new Set(),
+    auth: { connected: false, socialWrite: false, collectionsWrite: false },
+    reacted: new Map(), reacting: new Set(),
+    // Whether each video is in the Music Focus collection, by id; absent means unknown.
+    focus: new Map(), focusing: new Set(),
     muted: audio.muted === true, volume: Number.isFinite(audio.volume) ? audio.volume : 1,
   };
   let current = $('msVideoA');
@@ -104,8 +107,6 @@ export function mountMusicScout() {
     const host = $('msQueues');
     host.replaceChildren();
     for (const queue of state.catalog.queues) {
-      const card = document.createElement('div');
-      card.className = 'ms-queue-card';
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'ms-queue';
@@ -117,30 +118,33 @@ export function mountMusicScout() {
       const note = document.createElement('small');
       note.textContent = queue.models ? `${queue.description} ${queue.models.join(', ')}.` : queue.description;
       button.append(title, note);
-      button.title = 'Select again to start over from the newest videos';
+      button.title = 'Select again to start over from the top';
       button.addEventListener('click', () => selectQueue(queue.id, { force: true }));
-      card.append(button);
-      if (queue.perCreator) {
-        const label = document.createElement('label');
-        label.className = 'ms-per-creator';
-        label.textContent = 'Per creator ';
-        const input = document.createElement('input');
-        input.type = 'number'; input.min = '1'; input.max = String(state.catalog.perCreatorMax);
-        input.value = String(state.perCreator); input.id = 'msPerCreator';
-        input.setAttribute('aria-label', 'Videos per creator');
-        input.addEventListener('change', () => {
-          const value = Math.min(state.catalog.perCreatorMax, Math.max(1, Math.round(Number(input.value)) || 1));
-          input.value = String(value);
-          if (value === state.perCreator) return;
-          state.perCreator = value;
-          if (state.queue === queue.id) selectQueue(queue.id, { force: true });
-          else remember();
-        });
-        label.append(input);
-        card.append(label);
-      }
-      host.append(card);
+      host.append(button);
     }
+    // Queue options sit at the right end of the bar, apart from the queue choice itself.
+    const perCreator = state.catalog.queues.find(queue => queue.perCreator);
+    const options = $('msOptions');
+    options.replaceChildren();
+    if (!perCreator) return;
+    const label = document.createElement('label');
+    label.className = 'ms-per-creator';
+    label.textContent = 'Per creator ';
+    const input = document.createElement('input');
+    input.type = 'number'; input.min = '1'; input.max = String(state.catalog.perCreatorMax);
+    input.value = String(state.perCreator); input.id = 'msPerCreator';
+    input.setAttribute('aria-label', 'Videos per creator');
+    input.title = `Used by “${perCreator.name}”`;
+    input.addEventListener('change', () => {
+      const value = Math.min(state.catalog.perCreatorMax, Math.max(1, Math.round(Number(input.value)) || 1));
+      input.value = String(value);
+      if (value === state.perCreator) return;
+      state.perCreator = value;
+      if (state.queue === perCreator.id) selectQueue(perCreator.id, { force: true });
+      else remember();
+    });
+    label.append(input);
+    options.append(label);
   }
 
   function renderStrip() {
@@ -202,6 +206,54 @@ export function mountMusicScout() {
     }).catch(error => console.warn('Music Scout reaction state could not be read', error));
   }
 
+  function loadFocusState(items) {
+    if (!state.auth.connected || !items.length) return;
+    const params = new URLSearchParams();
+    for (const item of items) params.append('imageId', String(item.id));
+    api(`/api/music/focus-status?${params}`).then(result => {
+      for (const [id, value] of Object.entries(result.images || {})) state.focus.set(id, !!value);
+      renderReactions();
+    }).catch(error => console.warn('Music Focus state could not be read', error));
+  }
+
+  function focusButton(item) {
+    const name = state.catalog?.musicFocus?.name || 'Music Focus';
+    const known = state.focus.has(String(item.id));
+    const inside = state.focus.get(String(item.id)) === true;
+    const reason = !state.auth.connected ? `Sign in to save to ${name}`
+      : !state.auth.collectionsWrite ? 'Sign out and back in once to allow collection changes'
+      : !known ? `Checking ${name}…` : '';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'ms-focus';
+    button.classList.toggle('selected', inside);
+    button.setAttribute('aria-pressed', String(inside));
+    button.disabled = !!reason || state.focusing.has(String(item.id));
+    button.title = reason || (inside ? `In ${name}. Click to remove it.` : `Add to ${name}`);
+    button.setAttribute('aria-label', inside ? `In ${name}` : `Add to ${name}`);
+    button.textContent = '🎸';
+    button.addEventListener('click', () => toggleFocus(item, !inside));
+    return button;
+  }
+
+  async function toggleFocus(item, active) {
+    const id = String(item.id);
+    if (state.focusing.has(id)) return;
+    state.focusing.add(id);
+    renderReactions();
+    try {
+      const result = await api('/api/music/focus', { method: 'POST',
+        body: JSON.stringify({ imageId: item.id, active }) });
+      state.focus.set(id, !!result.inCollection);
+      if (result.inCollection !== active) message('Civitai did not apply that change. Try again.');
+    } catch (error) {
+      message(error.message);
+    } finally {
+      state.focusing.delete(id);
+      renderReactions();
+    }
+  }
+
   function renderReactions() {
     const host = $('msReactions');
     const item = state.items[state.index];
@@ -229,7 +281,7 @@ export function mountMusicScout() {
     total.className = 'total-reactions';
     total.title = mine ? 'Total reactions' : state.auth.connected ? 'Checking your reactions…' : 'Total reactions';
     total.textContent = `Total ${formatCount(stats.reactionCount)}`;
-    host.replaceChildren(...buttons, total);
+    host.replaceChildren(...buttons, total, focusButton(item));
   }
 
   async function toggleReaction(item, name, active) {
@@ -265,6 +317,7 @@ export function mountMusicScout() {
       state.items.push(...page.items);
       state.exhausted = !!page.exhausted && state.items.length >= page.total;
       loadReactionState(page.items);
+      loadFocusState(page.items);
     }).finally(() => { if (token === state.token) state.loading = null; });
     return state.loading;
   }
@@ -372,9 +425,12 @@ export function mountMusicScout() {
 
   async function ensureCatalog() {
     api('/api/auth-status').then(auth => {
-      state.auth = { connected: !!auth.connected, socialWrite: !!auth.socialWrite };
+      state.auth = { connected: !!auth.connected, socialWrite: !!auth.socialWrite,
+        collectionsWrite: !!auth.collectionsWrite };
       const unknown = state.items.filter(item => !state.reacted.has(String(item.id)));
       for (let start = 0; start < unknown.length; start += PAGE) loadReactionState(unknown.slice(start, start + PAGE));
+      const unchecked = state.items.filter(item => !state.focus.has(String(item.id)));
+      for (let start = 0; start < unchecked.length; start += PAGE) loadFocusState(unchecked.slice(start, start + PAGE));
       renderReactions();
     }).catch(() => {});
     if (state.catalog) return;

@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from discovery.musicscout import MUSIC_MODELS, MusicScout
+from discovery.musicscout import MUSIC_FOCUS, MUSIC_MODELS, MusicScout
 
 CDN = "https://image.civitai.com/key"
 
@@ -94,5 +94,51 @@ except ValueError:
     pass
 else:
     raise AssertionError("unknown queues must be rejected")
+
+# -- Music Focus: the signed-in collection feed, in the order Civitai returns -------
+def trpc_row(image_id, name, kind="video"):
+    return {"id": image_id, "postId": image_id, "type": kind, "url": f"key-{image_id}",
+            "user": {"username": name}, "createdAt": f"2025-0{image_id % 9 + 1}-01T00:00:00.000Z",
+            "width": 1920, "height": 1080, "nsfwLevel": 1, "baseModel": None,
+            "stats": {"likeCountAllTime": 3, "heartCountAllTime": 2}}
+
+
+class FakeSocial:
+    def __init__(self):
+        self.calls = []
+
+    def query(self, procedure, payload):
+        self.calls.append((procedure, dict(payload)))
+        assert procedure == "image.getInfinite", procedure
+        assert payload["collectionId"] == MUSIC_FOCUS["collectionId"], payload
+        assert payload["sort"] == "Recently Added" and payload["types"] == ["video"], payload
+        if payload.get("cursor") is None:
+            return {"items": [trpc_row(7, "Old"), trpc_row(3, "Older"), trpc_row(5, "Pic", "image")],
+                    "nextCursor": 900}
+        return {"items": [trpc_row(9, "Newer")], "nextCursor": None}
+
+
+social = FakeSocial()
+page = MusicScout(FakeArchive({}), social=lambda: social).page("music-focus", 0, 10)
+# Added order, not upload date: the merge must not re-sort a single feed.
+assert [item["id"] for item in page["items"]] == [7, 3, 9], page["items"]
+assert page["exhausted"], page
+entry = page["items"][0]
+assert entry["username"] == "Old" and entry["stats"]["reactionCount"] == 5, entry
+assert entry["videoUrl"] == ("https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/key-7/"
+                             "transcode=true,width=768,optimized=true/key-7.mp4"), entry
+assert entry["stillUrl"].endswith("/key-7.jpeg") and "anim=false" in entry["stillUrl"], entry
+
+
+def signed_out():
+    raise PermissionError("Sign in")
+
+
+try:
+    MusicScout(FakeArchive({}), social=signed_out).page("music-focus", 0, 10)
+except PermissionError:
+    pass
+else:
+    raise AssertionError("Music Focus must require sign-in")
 
 print("music scout queues: ok")

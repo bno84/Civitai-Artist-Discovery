@@ -191,6 +191,25 @@ class SocialClient:
             "removeFromCollectionIds": [],
         })
 
+    def remove_image_from_collection(self, image_id: int, collection_id: int) -> object:
+        return self.mutate("collection.saveItem", {
+            "type": "Image", "imageId": int(image_id), "collections": [],
+            "removeFromCollectionIds": [int(collection_id)],
+        })
+
+    def image_collection_ids(self, image_ids: list[int]) -> dict[int, set[int] | None]:
+        """Which of the account's collections hold each image; None where Civitai failed."""
+        values = self.batch_query_optional("collection.getUserCollectionItemsByItem",
+                                           [{"type": "Image", "imageId": int(value)} for value in image_ids])
+        result: dict[int, set[int] | None] = {}
+        for image_id, value in zip(image_ids, values):
+            if not isinstance(value, list):
+                result[int(image_id)] = None
+                continue
+            result[int(image_id)] = {int(row["collectionId"]) for row in value
+                                     if isinstance(row, dict) and row.get("collectionId")}
+        return result
+
     def hide_user(self, user_id: int, username: str | None = None) -> object:
         """Add one creator to the connected account's Civitai Content Controls."""
         data = {"id": int(user_id), "username": username or None}

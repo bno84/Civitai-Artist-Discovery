@@ -26,7 +26,7 @@ import traceback
 from discovery.civitai import API_LANE, CandidateCache
 from discovery.capture import AutoCapture
 from discovery.timemachine import TimeMachine
-from discovery.musicscout import MusicScout
+from discovery.musicscout import MUSIC_FOCUS, MusicScout
 from discovery.history import HistoryArchive, parse_day, previous_local_day
 from discovery.oauth import (CALLBACK_PORT, OAuthSetupError, client_info,
                              disconnect as oauth_disconnect, login as oauth_login,
@@ -63,7 +63,7 @@ CAPTURE = AutoCapture(HISTORY, SETTINGS)
 # than racing it for the same API budget.
 TIME_MACHINE = TimeMachine(DATA_ROOT / "discovery", HISTORY, TASTE)
 # In-memory video queues; they share the same paced request lane.
-MUSIC_SCOUT = MusicScout(HISTORY)
+MUSIC_SCOUT = MusicScout(HISTORY, social=lambda: music_scout_client())
 WRITE_LOCK = threading.Lock()
 HISTORY.on_block_complete = lambda key, merged: prepare_finished_block(key, merged)
 
@@ -184,6 +184,21 @@ def image_store(image_id: int):
     if TIME_MACHINE.has_image(image_id):
         return TIME_MACHINE
     return None
+
+
+def music_scout_client() -> SocialClient:
+    # Interactive, so outside the shared lane like reactions: the reader is waiting.
+    if not connected_or_false():
+        raise PermissionError("Sign in to Civitai to load the Music Focus collection")
+    return SocialClient()
+
+
+def music_focus_collection(client: SocialClient) -> dict:
+    collection = next((row for row in client.writable_image_collections(connected_user_id())
+                       if int(row["id"]) == MUSIC_FOCUS["collectionId"]), None)
+    if collection is None:
+        raise ValueError("The Music Focus collection is not one this account can add to")
+    return collection
 
 
 def collected_image(image_id: int) -> bool:
@@ -1262,8 +1277,26 @@ class Handler(BaseHTTPRequestHandler):
                     allow=lambda entry: entry["username"].casefold() not in hidden_creators
                     and entry["id"] not in hidden_images,
                     refresh=query.get("refresh", ["0"])[0] == "1"))
+            except PermissionError as error: self.json_response({"error": str(error)}, 401)
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Music Scout queue", error)
+            return
+        if parsed.path == "/api/music/focus-status":
+            try:
+                if not connected_or_false():
+                    self.json_response({"error": "Sign in to see what is in Music Focus."}, 401)
+                    return
+                image_ids = list(dict.fromkeys(int(value) for value in query.get("imageId", [])))
+                if not image_ids or len(image_ids) > 100:
+                    raise ValueError("Request between 1 and 100 image IDs")
+                if any(not MUSIC_SCOUT.served_entry(image_id) for image_id in image_ids):
+                    raise ValueError("Only videos Music Scout has shown can be checked")
+                held = SocialClient().image_collection_ids(image_ids)
+                self.json_response({"collectionId": MUSIC_FOCUS["collectionId"], "images": {
+                    str(image_id): MUSIC_FOCUS["collectionId"] in ids
+                    for image_id, ids in held.items() if ids is not None}})
+            except ValueError as error: self.json_response({"error": str(error)}, 400)
+            except Exception as error: self.internal_error("Music Focus status", error)
             return
         if parsed.path == "/api/timemachine/status":
             try:
@@ -1848,6 +1881,27 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/app/close":
                 self.json_response({"closing": True})
                 request_app_shutdown(self.server)
+                return
+            if parsed.path == "/api/music/focus":
+                if not auth_status().get("collectionsWrite"):
+                    self.json_response({"error": "Sign out and back in once to allow collection changes."}, 403)
+                    return
+                image_id = int(body.get("imageId"))
+                active = body.get("active")
+                if not isinstance(active, bool):
+                    raise ValueError("active must be true or false")
+                if not MUSIC_SCOUT.served_entry(image_id):
+                    raise ValueError("Only videos Music Scout has shown can be saved")
+                client = SocialClient()
+                collection = music_focus_collection(client)
+                if active:
+                    client.add_image_to_collection(image_id, collection)
+                else:
+                    client.remove_image_from_collection(image_id, collection["id"])
+                # Report what Civitai now holds rather than what was asked for.
+                held = client.image_collection_ids([image_id]).get(image_id)
+                self.json_response({"imageId": image_id, "collectionId": collection["id"],
+                                    "inCollection": active if held is None else collection["id"] in held})
                 return
             if parsed.path == "/api/collections/add":
                 if not auth_status().get("collectionsWrite"):

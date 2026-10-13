@@ -42,8 +42,10 @@ Windows-only.
 - Adds a **Music Scout** tab for skimming videos one at a time with sound, using ← and →.
   It has three queues: the latest videos capped at a few per creator (3 by default), the
   latest videos that credit a music generation model (YuE2 3B, ACE-Step Audio Gen), and
-  every latest video. Only videos are requested, the next one buffers while the current
-  one plays, and a thumbnail strip shows the loaded queue.
+  every latest video. Signed in, a fourth queue plays the Music Focus 🎸 collection in
+  recently added order. Only videos are requested, the next one buffers while the
+  current one plays, and a thumbnail strip shows the loaded queue. Reactions and a 🎸
+  button that adds or removes the video from Music Focus sit beside each video.
 - Provides **For you**, **Popular**, **New to you**, **Followed first**, and
   **Emerging first** views.
 - Ranks **Popular** by the sum of reactions across every visible image each artist posted

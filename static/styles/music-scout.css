@@ -1,12 +1,12 @@
 /* Music Scout: one video at a time, sized to the window, with a thumbnail queue below. */
 .ms-head { width: 100%; max-width: 1880px; margin: 0 auto 16px; gap: 12px; }
 .ms-queues { display: flex; flex-wrap: wrap; gap: 10px; }
-.ms-queue-card { display: flex; flex-direction: column; gap: 6px; flex: 1 1 240px; max-width: 420px; }
-.ms-queue { display: grid; gap: 4px; text-align: left; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); color: var(--text); cursor: pointer; }
+.ms-queue { flex: 1 1 240px; max-width: 420px; display: grid; align-content: start; gap: 4px; text-align: left; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); color: var(--text); cursor: pointer; }
 .ms-queue small { color: var(--muted); font-size: 12px; line-height: 1.45; }
 .ms-queue:hover { background: var(--surface-raised); }
 .ms-queue[aria-checked="true"] { border-color: var(--accent); background: var(--accent-surface); }
-.ms-per-creator { display: flex; align-items: center; gap: 8px; padding-left: 4px; color: var(--muted); font-size: 12px; }
+.ms-options { justify-self: end; margin-left: auto; display: flex; align-items: center; gap: 12px; }
+.ms-per-creator { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .ms-per-creator input { width: 64px; padding: 5px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel); color: var(--text); font: inherit; }
 
 .ms-player { max-width: 1880px; margin: 0 auto; display: grid; gap: 10px; scroll-margin-top: calc(var(--header-h, 64px) + var(--tabs-h, 52px) + 8px); }
@@ -26,6 +26,9 @@
 .ms-reactions { background: transparent; backdrop-filter: none; padding: 0; }
 .ms-reactions button:disabled { cursor: default; opacity: .75; }
 .ms-reactions button.selected { background: var(--accent-surface); box-shadow: inset 0 0 0 1px var(--accent); }
+.ms-reactions .ms-focus { margin-left: 6px; padding: 6px 10px; border-left: 1px solid var(--line); border-radius: 0 7px 7px 0; font-size: 16px; filter: grayscale(1); opacity: .6; }
+.ms-reactions .ms-focus:hover:not(:disabled), .ms-reactions .ms-focus.selected { filter: none; opacity: 1; }
+.ms-reactions .ms-focus.selected { background: var(--accent-surface); box-shadow: inset 0 0 0 1px var(--accent); border-radius: 7px; }
 .ms-meta-main a { color: var(--text); font-weight: 700; font-size: 16px; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ms-meta-main a:hover { color: var(--accent); }
 .ms-meta-main small { color: var(--muted); font-size: 13px; }
@@ -46,8 +49,7 @@
 .music-scout.ms-selected .ms-intro { display: none; }
 .music-scout.ms-selected .ms-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 10px; }
 .music-scout.ms-selected .ms-queues { gap: 6px; }
-.music-scout.ms-selected .ms-queue-card { flex: none; flex-direction: row; align-items: center; max-width: none; gap: 8px; }
-.music-scout.ms-selected .ms-queue { padding: 6px 14px; border-radius: var(--radius-pill); }
+.music-scout.ms-selected .ms-queue { flex: none; max-width: none; padding: 6px 14px; border-radius: var(--radius-pill); }
 .music-scout.ms-selected .ms-queue small { display: none; }
 .music-scout.ms-selected .ms-head .discovery-message:empty { display: none; }
 

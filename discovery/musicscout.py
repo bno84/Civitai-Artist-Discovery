@@ -15,11 +15,18 @@ Measured against civitai.red in Oct 2026:
 - ``anim=false,width=N`` redirects some videos to their original MP4 (30 MB and more),
   while the listing's own ``thumbnail.url`` is a JPEG for the same videos, so it is the
   still used here.
+- A collection in "Recently Added" order is only available from the signed-in tRPC
+  ``image.getInfinite``. The public API ignores ``collectionId``: without a sort it serves
+  the global most-reacted feed, and with ``sort=Newest`` the global newest feed.
+- tRPC rows carry ``metadata.audio``, but it is not reliable: a video marked
+  ``audio: false`` had an AAC track in both its original and transcoded files.
 """
 
 from __future__ import annotations
 
 import threading
+
+import urllib.parse
 
 from .civitai import normalize
 from .history import video_playback_url, video_still_url
@@ -42,6 +49,11 @@ MUSIC_MODELS = (
     {"modelId": 2549270, "name": "ACE-Step Audio Gen", "url": "https://civitai.red/models/2549270"},
 )
 
+# The account's own curated collection; videos can be added or removed from any queue.
+MUSIC_FOCUS = {"collectionId": 17980935, "name": "Music Focus 🎸",
+               "url": "https://civitai.red/collections/17980935"}
+CDN_ROOT = "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA"
+
 QUEUES = (
     {"id": "per-creator", "name": "Latest, a few per creator",
      "description": "Newest videos, capped per creator so one busy uploader cannot fill the queue.",
@@ -51,6 +63,9 @@ QUEUES = (
      "models": [model["name"] for model in MUSIC_MODELS]},
     {"id": "latest", "name": "Latest videos",
      "description": "Every new video, newest first."},
+    {"id": "music-focus", "name": MUSIC_FOCUS["name"],
+     "description": "Your Music Focus collection, most recently added first. Needs sign-in.",
+     "signIn": True},
 )
 QUEUE_IDS = {queue["id"] for queue in QUEUES}
 
@@ -82,6 +97,32 @@ def video_entry(raw: dict, source: str | None = None) -> dict | None:
     return entry
 
 
+def collection_entry(raw: dict) -> dict | None:
+    """The playback view of one signed-in ``image.getInfinite`` row.
+
+    These rows name the file by its CDN key rather than a URL, nest the creator under
+    ``user`` and report stats as ``*AllTime``, so they are mapped onto the shape the
+    public listing produces before the shared conversion runs.
+    """
+    key = str(raw.get("url") or "")
+    if raw.get("type") != "video" or not key or "/" in key:
+        return None
+    stats = raw.get("stats") if isinstance(raw.get("stats"), dict) else {}
+    quoted = urllib.parse.quote(key)
+    listing = {
+        "id": raw.get("id"), "postId": raw.get("postId"), "type": "video",
+        "username": (raw.get("user") or {}).get("username") or "Unknown",
+        "createdAt": raw.get("createdAt"), "width": raw.get("width"), "height": raw.get("height"),
+        "browsingLevel": raw.get("nsfwLevel"), "baseModel": raw.get("baseModel"),
+        "url": f"{CDN_ROOT}/{quoted}/original=true/{quoted}.mp4",
+        "thumbnail": {"url": f"{CDN_ROOT}/{quoted}/anim=false,transcode=true,optimized=true,"
+                             f"width={STILL_WIDTH}/{quoted}.jpeg"},
+        "stats": {name: stats.get(f"{name}AllTime") or 0 for name in
+                  ("likeCount", "heartCount", "laughCount", "cryCount", "commentCount")},
+    }
+    return video_entry(listing)
+
+
 class Feed:
     """One Civitai listing, paged newest first."""
 
@@ -107,6 +148,29 @@ class Feed:
         # cursor cannot spin forever.
         self.exhausted = not cursor or not items
         self.cursor = cursor
+
+
+class CollectionFeed(Feed):
+    """One collection, most recently added first, read through the signed-in client."""
+
+    def __init__(self, social, collection_id: int, mask: int):
+        super().__init__(None, {})
+        self.social = social
+        self.collection_id = collection_id
+        self.mask = mask
+
+    def fetch(self) -> None:
+        payload = {"collectionId": self.collection_id, "sort": "Recently Added",
+                   "period": "AllTime", "types": ["video"], "limit": PAGE_SIZE,
+                   "browsingLevel": self.mask}
+        if self.cursor:
+            payload["cursor"] = self.cursor
+        value = self.social().query("image.getInfinite", payload)
+        value = value if isinstance(value, dict) else {}
+        items = value.get("items") if isinstance(value.get("items"), list) else []
+        self.buffer.extend(entry for entry in (collection_entry(raw) for raw in items) if entry)
+        self.cursor = value.get("nextCursor")
+        self.exhausted = not self.cursor or not items
 
 
 class Queue:
@@ -173,10 +237,12 @@ class Queue:
 class MusicScout:
     """The queues in use, keyed by everything that changes what they contain."""
 
-    def __init__(self, archive):
+    def __init__(self, archive, social=None):
         # The archive's request path carries the shared API lane and adaptive pacing, so a
         # queue page waits its turn behind a day build rather than racing it.
         self.archive = archive
+        # Returns a signed-in client, or raises PermissionError when there is none.
+        self.social = social
         self.queues: dict[tuple, Queue] = {}
         # Every video handed to the page, by id. Reacting is limited to these, the same
         # way it is limited to collected images elsewhere, and a reaction updates the
@@ -190,6 +256,12 @@ class MusicScout:
         if queue_id == "music-models":
             return Queue([Feed(request, {**base, "modelId": model["modelId"]}, model["name"])
                           for model in MUSIC_MODELS], allow=allow)
+        if queue_id == "music-focus":
+            if self.social is None:
+                raise PermissionError("Sign in to Civitai to load the Music Focus collection")
+            self.social()  # Fail now, not on the first page, when nobody is signed in.
+            return Queue([CollectionFeed(self.social, MUSIC_FOCUS["collectionId"], mask)],
+                         allow=allow)
         if queue_id == "per-creator":
             return Queue([Feed(request, base)], per_creator=per_creator, allow=allow)
         return Queue([Feed(request, base)], allow=allow)
@@ -220,4 +292,5 @@ class MusicScout:
     @staticmethod
     def catalog() -> dict:
         return {"queues": list(QUEUES), "musicModels": list(MUSIC_MODELS),
+                "musicFocus": MUSIC_FOCUS,
                 "perCreatorDefault": PER_CREATOR_DEFAULT, "perCreatorMax": PER_CREATOR_MAX}
