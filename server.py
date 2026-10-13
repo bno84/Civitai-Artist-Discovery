@@ -26,6 +26,7 @@ import traceback
 from discovery.civitai import API_LANE, CandidateCache
 from discovery.capture import AutoCapture
 from discovery.timemachine import TimeMachine
+from discovery.musicscout import MusicScout
 from discovery.history import HistoryArchive, parse_day, previous_local_day
 from discovery.oauth import (CALLBACK_PORT, OAuthSetupError, client_info,
                              disconnect as oauth_disconnect, login as oauth_login,
@@ -61,6 +62,8 @@ CAPTURE = AutoCapture(HISTORY, SETTINGS)
 # Shares HISTORY's paced request lane, so priming queues behind a day build rather
 # than racing it for the same API budget.
 TIME_MACHINE = TimeMachine(DATA_ROOT / "discovery", HISTORY, TASTE)
+# In-memory video queues; they share the same paced request lane.
+MUSIC_SCOUT = MusicScout(HISTORY)
 WRITE_LOCK = threading.Lock()
 HISTORY.on_block_complete = lambda key, merged: prepare_finished_block(key, merged)
 
@@ -1241,6 +1244,26 @@ class Handler(BaseHTTPRequestHandler):
             except KeyError as error: self.json_response({"error": str(error.args[0])}, 404)
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Time machine creator history", error)
+            return
+        if parsed.path == "/api/music/queues":
+            try:
+                self.json_response(MUSIC_SCOUT.catalog())
+            except Exception as error: self.internal_error("Music Scout queues", error)
+            return
+        if parsed.path == "/api/music/queue":
+            try:
+                hidden_creators, hidden_images = hidden_preferences()
+                self.json_response(MUSIC_SCOUT.page(
+                    query.get("queue", [""])[0],
+                    offset=int(query.get("offset", ["0"])[0]),
+                    limit=int(query.get("limit", ["20"])[0]),
+                    per_creator=int(query.get("perCreator", ["3"])[0]),
+                    levels=HISTORY.visible_levels,
+                    allow=lambda entry: entry["username"].casefold() not in hidden_creators
+                    and entry["id"] not in hidden_images,
+                    refresh=query.get("refresh", ["0"])[0] == "1"))
+            except ValueError as error: self.json_response({"error": str(error)}, 400)
+            except Exception as error: self.internal_error("Music Scout queue", error)
             return
         if parsed.path == "/api/timemachine/status":
             try:

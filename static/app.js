@@ -1727,27 +1727,33 @@ async function pollDiscovery() {
 // Machine was left. Landing halfway down a day nobody scrolled through is wrong on its
 // own, and it also feeds the seen tracking: cards there are on screen, so reading on from
 // that point dims work the reader never actually passed.
-const viewScroll = { gallery: 0, discovery: 0, timemachine: 0 };
+const viewScroll = { gallery: 0, discovery: 0, timemachine: 0, music: 0 };
 function showView(name) {
   const previous = currentView;
   if (previous !== name) viewScroll[previous] = window.scrollY;
   currentView = name;
   const discovery = name === "discovery";
   const timeMachine = name === "timemachine";
-  const gallery = !discovery && !timeMachine;
+  const music = name === "music";
+  const gallery = !discovery && !timeMachine && !music;
   if (!gallery) pauseSeenTracking();
   $("tabGallery").classList.toggle("active", gallery); $("tabGallery").setAttribute("aria-pressed", String(gallery));
   $("tabDiscovery").classList.toggle("active", discovery); $("tabDiscovery").setAttribute("aria-pressed", String(discovery));
   $("tabTimeMachine").classList.toggle("active", timeMachine); $("tabTimeMachine").setAttribute("aria-pressed", String(timeMachine));
+  $("tabMusicScout").classList.toggle("active", music); $("tabMusicScout").setAttribute("aria-pressed", String(music));
   segmentToolbar.classList.toggle("hidden", !gallery);
   ["olderDay", "newerDay", "selectedDate", "rebuildDay", "summary"].forEach(id => $(id).classList.toggle("hidden", !gallery));
   $("discovery").classList.toggle("hidden", !discovery);
   $("timeMachine").classList.toggle("hidden", !timeMachine);
+  $("musicScout").classList.toggle("hidden", !music);
+  // Music Scout plays with sound, so it must go quiet the moment another tab opens.
+  window.CivitaiMusicScout?.setActive(music);
   $("loading").classList.toggle("hidden", !gallery || dayBuilt);
   $("gallery").classList.toggle("hidden", !gallery || !dayBuilt);
   // Before seen tracking resumes below, so the observer's first report describes where
   // the reader actually is rather than the position the previous tab was left at.
   if (previous !== name) window.scrollTo({ top: viewScroll[name] ?? 0, behavior: "auto" });
+  if (music) return;
   if (timeMachine) {
     refreshTimeMachine().catch(error => window.CivitaiUI.showPageError(
       $("timeMachineMessage"), error.message, refreshTimeMachine));
@@ -1776,6 +1782,7 @@ function showView(name) {
 $("tabGallery").onclick = () => showView("gallery");
 $("tabDiscovery").onclick = () => showView("discovery");
 $("tabTimeMachine").onclick = () => showView("timemachine");
+$("tabMusicScout").onclick = () => showView("music");
 
 // The Time Machine walks each followed creator from their oldest image. A card advances
 // only when it has been scrolled past, using the same rule as the dimmed gallery cards,

@@ -13,6 +13,7 @@ import { renderProfile } from './profile.js';
 import { startPerformanceTrace } from './performance.js';
 import { mountCalendar } from './calendar.js';
 import { mountPreferences } from './preferences.js';
+import { mountMusicScout } from './music-scout.js';
 import { showDetailVideo, clearDetailVideo, suspendCardVideos } from './video.js';
 
 if (new URLSearchParams(location.search).get('uiPerf') === '1') {
@@ -32,6 +33,7 @@ controller.onload = () => {
   mountPageLayout();
   const preferences = mountPreferences();
   window.updateGalleryPreferencesUI = preferences.update;
+  window.CivitaiMusicScout = mountMusicScout();
   const calendar = mountCalendar({ api,
     state: () => window.galleryCalendarState(),
     select: (date, segment) => window.selectGalleryDate(date, segment),
