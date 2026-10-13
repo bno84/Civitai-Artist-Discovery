@@ -1441,7 +1441,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not raw_ids or len(raw_ids) > 100:
                     raise ValueError("Request between 1 and 100 image IDs")
                 image_ids = list(dict.fromkeys(int(value) for value in raw_ids))
-                if any(not collected_image(image_id) for image_id in image_ids):
+                if any(not collected_image(image_id) and not MUSIC_SCOUT.served_entry(image_id)
+                       for image_id in image_ids):
                     raise ValueError("Image is not in this history archive")
                 try:
                     values = SocialClient().batch_query_optional("image.get", [{"id": image_id} for image_id in image_ids])
@@ -1895,7 +1896,8 @@ class Handler(BaseHTTPRequestHandler):
         state = CACHE.load(); item = next((row for row in state.get("items", []) if int(row.get("id", -1)) == image_id), None)
         stores = image_stores(image_id)
         in_history = bool(stores)
-        if item is None and not in_history:
+        scouted = MUSIC_SCOUT.served_entry(image_id)
+        if item is None and not in_history and scouted is None:
             raise ValueError("Image is not in this discovery feed")
         client = SocialClient()
         payload = client.query("image.get", {"id": image_id})
@@ -1927,7 +1929,16 @@ class Handler(BaseHTTPRequestHandler):
             if changed or live:
                 for store in stores:
                     store.update_stats(image_id, {**store.stats(image_id), **stats})
-        else: stats = {**item.get("stats", {}), **live}
+        elif item is not None: stats = {**item.get("stats", {}), **live}
+        else:
+            # A Music Scout video lives only in memory. Its listing counts are minutes
+            # old at most; Civitai's live counts were read before the toggle above.
+            stats = {**scouted.get("stats", {}), **live}
+            if changed:
+                delta = 1 if desired else -1; key = REACTIONS[reaction]
+                stats[key] = max(0, int(stats.get(key, 0)) + delta)
+                stats["reactionCount"] = sum(int(stats.get(name, 0)) for name in REACTIONS.values())
+            scouted["stats"] = stats
         self.json_response({"imageId": image_id, "reactions": sorted(current), "stats": stats, "changed": changed})
 
     def handle_follow(self, body: dict) -> None:

@@ -58,6 +58,10 @@ assert "/transcode=true,width=768,optimized=true/" in first["videoUrl"], first
 assert first["stillUrl"].endswith(".jpeg") and "anim=false" in first["stillUrl"], first
 assert first["civitaiUrl"].endswith("/images/10"), first
 
+# Only videos actually handed to the page may be reacted to.
+assert scout.served_entry(10)["username"] == "Busy"
+assert scout.served_entry(42) is None and scout.served_entry(31) is None
+
 # A later page reuses the same queue rather than starting again.
 requests = len(archive.requests)
 again = scout.page("per-creator", 2, 2, per_creator=2, levels=(1, 2), allow=allow)

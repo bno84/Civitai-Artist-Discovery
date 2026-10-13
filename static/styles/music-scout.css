@@ -1,5 +1,5 @@
 /* Music Scout: one video at a time, sized to the window, with a thumbnail queue below. */
-.ms-head { max-width: 1880px; margin: 0 auto 16px; gap: 12px; }
+.ms-head { width: 100%; max-width: 1880px; margin: 0 auto 16px; gap: 12px; }
 .ms-queues { display: flex; flex-wrap: wrap; gap: 10px; }
 .ms-queue-card { display: flex; flex-direction: column; gap: 6px; flex: 1 1 240px; max-width: 420px; }
 .ms-queue { display: grid; gap: 4px; text-align: left; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); color: var(--text); cursor: pointer; }
@@ -21,7 +21,11 @@
 .ms-video-error { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); padding: 8px 14px; border-radius: var(--radius-sm); background: #000c; color: var(--danger-text); }
 
 .ms-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; padding: 0 62px; }
-.ms-meta-main { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.ms-meta-main { display: flex; align-items: baseline; gap: 12px; min-width: 0; flex: 1 1 260px; }
+.ms-meta-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-reactions { background: transparent; backdrop-filter: none; padding: 0; }
+.ms-reactions button:disabled { cursor: default; opacity: .75; }
+.ms-reactions button.selected { background: var(--accent-surface); box-shadow: inset 0 0 0 1px var(--accent); }
 .ms-meta-main a { color: var(--text); font-weight: 700; font-size: 16px; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ms-meta-main a:hover { color: var(--accent); }
 .ms-meta-main small { color: var(--muted); font-size: 13px; }
@@ -37,6 +41,25 @@
 .ms-thumb span { position: absolute; right: 4px; bottom: 2px; font-size: 11px; color: #fff; text-shadow: 0 1px 3px #000; }
 .ms-thumb-missing { background: var(--surface-raised); }
 .ms-keys { color: var(--muted); font-size: 12px; text-align: center; }
+
+/* Once a queue is chosen, the intro goes and the picker becomes one row of buttons. */
+.music-scout.ms-selected .ms-intro { display: none; }
+.music-scout.ms-selected .ms-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 10px; }
+.music-scout.ms-selected .ms-queues { gap: 6px; }
+.music-scout.ms-selected .ms-queue-card { flex: none; flex-direction: row; align-items: center; max-width: none; gap: 8px; }
+.music-scout.ms-selected .ms-queue { padding: 6px 14px; border-radius: var(--radius-pill); }
+.music-scout.ms-selected .ms-queue small { display: none; }
+.music-scout.ms-selected .ms-head .discovery-message:empty { display: none; }
+
+/* Desktop: the whole player fits the window. --ms-top is where the section starts. */
+@media (min-width: 701px) {
+  main:has(> #musicScout.ms-selected:not(.hidden)) { padding-bottom: 12px; }
+  #musicScout.ms-selected:not(.hidden) { display: flex; flex-direction: column; height: calc(100dvh - var(--ms-top, 140px) - 12px); }
+  #musicScout.ms-selected .ms-head { flex: none; }
+  #musicScout.ms-selected .ms-player { flex: 1; min-height: 0; width: 100%; grid-template-rows: minmax(0, 1fr) auto auto auto; }
+  #musicScout.ms-selected .ms-stage { min-height: 0; }
+  #musicScout.ms-selected .ms-screen { height: 100%; min-height: 200px; }
+}
 
 @media (max-width: 700px) {
   .ms-nav { width: 40px; height: 40px; font-size: 26px; }

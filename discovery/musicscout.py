@@ -178,6 +178,10 @@ class MusicScout:
         # queue page waits its turn behind a day build rather than racing it.
         self.archive = archive
         self.queues: dict[tuple, Queue] = {}
+        # Every video handed to the page, by id. Reacting is limited to these, the same
+        # way it is limited to collected images elsewhere, and a reaction updates the
+        # counts here so a revisit shows them.
+        self.served: dict[int, dict] = {}
         self.lock = threading.Lock()
 
     def _build(self, queue_id: str, per_creator: int, mask: int, allow) -> Queue:
@@ -204,7 +208,14 @@ class MusicScout:
                 self.queues[key] = self._build(queue_id, per_creator, mask, allow)
             queue = self.queues[key]
         queue.allow = allow
-        return {"queue": queue_id, "offset": offset, **queue.page(offset, limit)}
+        result = queue.page(offset, limit)
+        with self.lock:
+            self.served.update((entry["id"], entry) for entry in result["items"])
+        return {"queue": queue_id, "offset": offset, **result}
+
+    def served_entry(self, image_id: int) -> dict | None:
+        with self.lock:
+            return self.served.get(int(image_id))
 
     @staticmethod
     def catalog() -> dict:

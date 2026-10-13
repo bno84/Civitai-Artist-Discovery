@@ -7,12 +7,19 @@ const PAGE = 20;
 // Ask for the next page while this many videos are still ahead of the reader.
 const PREFETCH_AHEAD = 6;
 const STATE_KEY = 'civitaiMusicScout';
+const REACTIONS = [['Like', '👍', 'likeCount'], ['Heart', '❤️', 'heartCount'],
+  ['Laugh', '😂', 'laughCount'], ['Cry', '😢', 'cryCount']];
 const AUDIO_KEY = 'civitaiMusicScoutAudio';
 
 const $ = id => document.getElementById(id);
 
 function readJSON(storage, key) {
   try { return JSON.parse(storage.getItem(key) || 'null') || {}; } catch (_) { return {}; }
+}
+
+function formatCount(value) {
+  const number = Math.max(0, Number(value) || 0);
+  return number >= 1000 ? `${(number / 1000).toFixed(number >= 10000 ? 0 : 1)}k` : String(number);
 }
 
 function formatDate(value) {
@@ -26,6 +33,8 @@ export function mountMusicScout() {
   const state = {
     catalog: null, queue: null, perCreator: 3, items: [], index: 0, exhausted: false,
     loading: null, token: 0, active: false, refresh: false,
+    // Reaction state is the account's own, so it is only known once signed in.
+    auth: { connected: false, socialWrite: false }, reacted: new Map(), reacting: new Set(),
     muted: audio.muted === true, volume: Number.isFinite(audio.volume) ? audio.volume : 1,
   };
   let current = $('msVideoA');
@@ -177,6 +186,68 @@ export function mountMusicScout() {
     $('msCivitai').href = item.civitaiUrl;
     $('msDetail').textContent = [formatDate(item.createdAt), item.source, item.baseModel !== 'Unknown' ? item.baseModel : '']
       .filter(Boolean).join(' · ');
+    renderReactions();
+  }
+
+  // One request per loaded page answers "have I reacted?" for every video on it.
+  function loadReactionState(items) {
+    if (!state.auth.connected || !items.length) return;
+    const params = new URLSearchParams();
+    for (const item of items) params.append('imageId', String(item.id));
+    api(`/api/reaction-status?${params}`).then(result => {
+      for (const [id, value] of Object.entries(result.images || {})) {
+        state.reacted.set(id, new Set(value.reactions || []));
+      }
+      renderReactions();
+    }).catch(error => console.warn('Music Scout reaction state could not be read', error));
+  }
+
+  function renderReactions() {
+    const host = $('msReactions');
+    const item = state.items[state.index];
+    if (!item) { host.replaceChildren(); return; }
+    const stats = item.stats || {};
+    const mine = state.reacted.get(String(item.id));
+    const reason = !state.auth.connected ? 'Sign in to see and add your reactions'
+      : !state.auth.socialWrite ? 'Civitai did not grant reaction access' : '';
+    const buttons = REACTIONS.map(([name, icon, key]) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.reaction = name;
+      const selected = !!mine?.has(name);
+      button.classList.toggle('selected', selected);
+      button.setAttribute('aria-pressed', String(selected));
+      button.disabled = !!reason || state.reacting.has(`${item.id}:${name}`);
+      button.title = reason || (selected ? `Remove your ${name}` : name);
+      const count = document.createElement('b');
+      count.textContent = formatCount(stats[key]);
+      button.append(`${icon} `, count);
+      button.addEventListener('click', () => toggleReaction(item, name, !selected));
+      return button;
+    });
+    const total = document.createElement('span');
+    total.className = 'total-reactions';
+    total.title = mine ? 'Total reactions' : state.auth.connected ? 'Checking your reactions…' : 'Total reactions';
+    total.textContent = `Total ${formatCount(stats.reactionCount)}`;
+    host.replaceChildren(...buttons, total);
+  }
+
+  async function toggleReaction(item, name, active) {
+    const key = `${item.id}:${name}`;
+    if (state.reacting.has(key)) return;
+    state.reacting.add(key);
+    renderReactions();
+    try {
+      const result = await api('/api/reaction', { method: 'POST',
+        body: JSON.stringify({ imageId: item.id, reaction: name, active }) });
+      item.stats = { ...(item.stats || {}), ...(result.stats || {}) };
+      state.reacted.set(String(item.id), new Set(result.reactions || []));
+    } catch (error) {
+      message(error.message);
+    } finally {
+      state.reacting.delete(key);
+      renderReactions();
+    }
   }
 
   async function fetchMore() {
@@ -190,8 +261,10 @@ export function mountMusicScout() {
     state.loading = api(`/api/music/queue?${params}`).then(page => {
       if (token !== state.token) return;
       // The server answers by offset, so an answer is appended only where it starts.
-      if (page.offset === state.items.length) state.items.push(...page.items);
+      if (page.offset !== state.items.length) return;
+      state.items.push(...page.items);
       state.exhausted = !!page.exhausted && state.items.length >= page.total;
+      loadReactionState(page.items);
     }).finally(() => { if (token === state.token) state.loading = null; });
     return state.loading;
   }
@@ -250,6 +323,8 @@ export function mountMusicScout() {
     for (const button of $('msQueues').querySelectorAll('.ms-queue')) {
       button.setAttribute('aria-checked', String(button.dataset.queue === id));
     }
+    // Once a queue is chosen the picker shrinks to one row of buttons.
+    $('musicScout').classList.add('ms-selected');
     release(current); release(spare);
     $('msStrip').replaceChildren();
     $('msPlayer').classList.add('hidden');
@@ -272,15 +347,36 @@ export function mountMusicScout() {
       }
       message('');
       $('msPlayer').classList.remove('hidden');
+      fit();
       show(Math.min(index, state.items.length - 1));
-      // The stage is sized to the window, so bring all of it into view.
-      $('msPlayer').scrollIntoView({ block: 'start', behavior: 'smooth' });
     } catch (error) {
       if (token === state.token) message(error.message);
     }
   }
 
+  // On desktop the page fits the window: the stage takes whatever height is left below
+  // the app's own header, tabs and the queue bar, so nothing scrolls.
+  function fit() {
+    const section = $('musicScout');
+    if (section.classList.contains('hidden')) return;
+    const top = section.getBoundingClientRect().top + window.scrollY;
+    section.style.setProperty('--ms-top', `${Math.round(top)}px`);
+  }
+  window.addEventListener('resize', fit);
+  // The header grows when, say, an update notice appears, which moves the section down.
+  const reflow = new ResizeObserver(() => fit());
+  for (const selector of ['body > header', '.view-tabs']) {
+    const element = document.querySelector(selector);
+    if (element) reflow.observe(element);
+  }
+
   async function ensureCatalog() {
+    api('/api/auth-status').then(auth => {
+      state.auth = { connected: !!auth.connected, socialWrite: !!auth.socialWrite };
+      const unknown = state.items.filter(item => !state.reacted.has(String(item.id)));
+      for (let start = 0; start < unknown.length; start += PAGE) loadReactionState(unknown.slice(start, start + PAGE));
+      renderReactions();
+    }).catch(() => {});
     if (state.catalog) return;
     state.catalog = await api('/api/music/queues');
     state.perCreator = Number(saved.perCreator) || state.catalog.perCreatorDefault;
@@ -298,6 +394,7 @@ export function mountMusicScout() {
       release(current); release(spare);
       return;
     }
+    fit();
     ensureCatalog().then(() => {
       if (state.active && state.items.length && !current.getAttribute('src')) show(state.index);
     }).catch(error => message(error.message));
