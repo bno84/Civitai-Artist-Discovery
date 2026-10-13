@@ -26,7 +26,7 @@ import traceback
 from discovery.civitai import API_LANE, CandidateCache
 from discovery.capture import AutoCapture
 from discovery.timemachine import TimeMachine
-from discovery.musicscout import MUSIC_FOCUS, MusicScout
+from discovery.musicscout import MUSIC_FOCUS, HubBuilding, MusicScout
 from discovery.history import HistoryArchive, parse_day, previous_local_day
 from discovery.oauth import (CALLBACK_PORT, OAuthSetupError, client_info,
                              disconnect as oauth_disconnect, login as oauth_login,
@@ -1297,6 +1297,9 @@ class Handler(BaseHTTPRequestHandler):
                     allow=lambda entry: entry["username"].casefold() not in hidden_creators
                     and entry["id"] not in hidden_images,
                     refresh=query.get("refresh", ["0"])[0] == "1"))
+            except HubBuilding as building:
+                self.json_response({"building": True, "done": building.done,
+                                    "total": building.total}, 202)
             except PermissionError as error: self.json_response({"error": str(error)}, 401)
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Music Scout queue", error)

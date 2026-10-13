@@ -131,10 +131,10 @@ export function mountMusicScout() {
       host.append(button);
     }
     // Queue options sit at the right end of the bar, apart from the queue choice itself.
-    const perCreator = state.catalog.queues.find(queue => queue.perCreator);
+    const capped = state.catalog.queues.filter(queue => queue.perCreator);
     const options = $('msOptions');
     options.replaceChildren();
-    if (!perCreator) return;
+    if (!capped.length) return;
     const label = document.createElement('label');
     label.className = 'ms-per-creator';
     label.textContent = 'Per creator ';
@@ -142,13 +142,13 @@ export function mountMusicScout() {
     input.type = 'number'; input.min = '1'; input.max = String(state.catalog.perCreatorMax);
     input.value = String(state.perCreator); input.id = 'msPerCreator';
     input.setAttribute('aria-label', 'Videos per creator');
-    input.title = `Used by “${perCreator.name}”`;
+    input.title = `Used by ${capped.map(queue => `“${queue.name}”`).join(' and ')}`;
     input.addEventListener('change', () => {
       const value = Math.min(state.catalog.perCreatorMax, Math.max(1, Math.round(Number(input.value)) || 1));
       input.value = String(value);
       if (value === state.perCreator) return;
       state.perCreator = value;
-      if (state.queue === perCreator.id) selectQueue(perCreator.id, { force: true });
+      if (capped.some(queue => queue.id === state.queue)) selectQueue(state.queue, { force: true });
       else remember();
     });
     label.append(input);
@@ -410,7 +410,9 @@ export function mountMusicScout() {
     state.loading = api(`/api/music/queue?${params}`).then(page => {
       if (token !== state.token) return;
       // The server answers by offset, so an answer is appended only where it starts.
-      if (page.offset !== state.items.length) return;
+      // MF hub answers "still reading creators" until its first build is done.
+      state.building = page.building ? page : null;
+      if (page.building || page.offset !== state.items.length) return;
       state.items.push(...page.items);
       state.exhausted = !!page.exhausted && state.items.length >= page.total;
       loadReactionState(page.items);
@@ -499,6 +501,11 @@ export function mountMusicScout() {
     const token = state.token;
     try {
       await fetchMore();
+      while (state.building && token === state.token) {
+        message(`Reading Music Focus creators… ${state.building.done}/${state.building.total}`);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        if (token === state.token) await fetchMore();
+      }
       if (token !== state.token) return;
       // Either reach the saved position, or the first video not viewed yet.
       const reached = () => index !== null ? state.items.length > index

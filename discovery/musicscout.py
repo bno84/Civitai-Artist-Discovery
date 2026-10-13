@@ -26,14 +26,18 @@ from __future__ import annotations
 
 import threading
 
+from concurrent.futures import ThreadPoolExecutor
+import json
 from pathlib import Path
 import sqlite3
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 
 from .civitai import normalize
 from .history import video_playback_url, video_still_url
-from .site import image_url, profile_url
+from .site import API_URL, image_url, profile_url
 
 
 PAGE_SIZE = 100
@@ -68,6 +72,16 @@ MUSIC_FOCUS = {"collectionId": 17980935, "name": "Music Focus 🎸",
 FOCUS_TTL_SECONDS = 600
 FOCUS_PAGE_SIZE = 200
 FOCUS_MAX_PAGES = 50
+# MF hub: each Music Focus creator's newest videos, one public request per creator. The
+# results are kept between sessions and reread once they are this old.
+HUB_TTL_SECONDS = 1800
+# Fetched per creator even when the cap is lower, so raising it a little needs no refetch.
+HUB_FETCH_MIN = 5
+# The first read of creators with nothing saved is one the reader is waiting on, so it
+# runs a few requests at a time outside the shared lane: 111 creators took 84 seconds one
+# by one. Refreshing saved results stays sequential, in the background, on the lane.
+HUB_WORKERS = 4
+HUB_USER_AGENT = "CivitaiArtistDiscovery/1.0 (local artist discovery app)"
 CDN_ROOT = "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA"
 
 QUEUES = (
@@ -82,7 +96,42 @@ QUEUES = (
     {"id": "music-focus", "name": MUSIC_FOCUS["name"],
      "description": "Your Music Focus collection, most recently added first. Needs sign-in.",
      "signIn": True},
+    {"id": "mf-hub", "name": "MF hub",
+     "description": "Newest videos from creators who have been collected in Music Focus, "
+                    "capped per creator. Needs sign-in.",
+     "perCreator": True, "signIn": True},
 )
+PER_CREATOR_QUEUES = {queue["id"] for queue in QUEUES if queue.get("perCreator")}
+
+
+def public_listing(params: dict, attempts: int = 3) -> dict:
+    """One public /api/v1/images read outside the shared lane, for the parallel build."""
+    request = urllib.request.Request(f"{API_URL}?{urllib.parse.urlencode(params)}",
+                                     headers={"Accept": "application/json",
+                                              "User-Agent": HUB_USER_AGENT})
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            if (error.code != 429 and error.code < 500) or attempt == attempts - 1:
+                raise
+            retry = error.headers.get("Retry-After")
+            time.sleep(float(retry) if retry and retry.isdigit() else 2.0 * (attempt + 1))
+        except (TimeoutError, urllib.error.URLError):
+            if attempt == attempts - 1:
+                raise
+            time.sleep(2.0 * (attempt + 1))
+    raise RuntimeError("unreachable")
+
+
+class HubBuilding(Exception):
+    """MF hub has no saved videos yet for some creators; they are being read now."""
+
+    def __init__(self, done: int, total: int):
+        super().__init__("Reading Music Focus creators")
+        self.done, self.total = done, total
+
 QUEUE_IDS = {queue["id"] for queue in QUEUES}
 
 
@@ -266,8 +315,15 @@ class MusicScout:
         self.served: dict[int, dict] = {}
         self.lock = threading.Lock()
         self.focus_ids_cache: set[int] | None = None
+        # Creator username by casefolded key, from the same read of the collection.
+        self.focus_creators_cache: dict[str, str] = {}
         self.focus_loaded_at = 0.0
         self.focus_lock = threading.Lock()
+        # "build" reads creators with nothing saved, in parallel, while the reader waits;
+        # "refresh" rereads old results one at a time in the background.
+        self.hub_jobs = {kind: {"running": False, "done": 0, "total": 0, "error": None,
+                                "keys": set()} for kind in ("build", "refresh")}
+        self.hub_lock = threading.Lock()
         # Which videos the reader has already watched, kept across sessions so a queue
         # can open on the first one not seen yet. Its own small database: it is personal
         # history, unrelated to the daily archive or the taste profile.
@@ -279,6 +335,10 @@ class MusicScout:
         with self.viewed_lock, self.viewed_db:
             self.viewed_db.execute("CREATE TABLE IF NOT EXISTS viewed("
                                    "image_id INTEGER PRIMARY KEY, viewed_at TEXT NOT NULL)")
+            self.viewed_db.execute("CREATE TABLE IF NOT EXISTS hub_latest("
+                                   "username_key TEXT PRIMARY KEY, username TEXT NOT NULL, "
+                                   "mask INTEGER NOT NULL, fetch_limit INTEGER NOT NULL, "
+                                   "fetched_at REAL NOT NULL, entries TEXT NOT NULL)")
 
     def viewed_ids(self, image_ids) -> set[int]:
         ids = [int(value) for value in image_ids]
@@ -308,6 +368,12 @@ class MusicScout:
                          allow=allow)
         if queue_id == "per-creator":
             return Queue([Feed(request, base)], per_creator=per_creator, allow=allow)
+        if queue_id == "mf-hub":
+            if self.social is None:
+                raise PermissionError("Sign in to Civitai to load MF hub")
+            feed = Feed(None, {})
+            feed.buffer, feed.exhausted = self.hub_entries(per_creator, mask), True
+            return Queue([feed], per_creator=per_creator, allow=allow)
         return Queue([Feed(request, base)], allow=allow)
 
     def page(self, queue_id: str, offset: int = 0, limit: int = 20,
@@ -318,7 +384,7 @@ class MusicScout:
         per_creator = min(PER_CREATOR_MAX, max(1, int(per_creator)))
         offset, limit = max(0, int(offset)), min(100, max(1, int(limit)))
         mask = sum(levels)
-        key = (queue_id, per_creator if queue_id == "per-creator" else None, mask)
+        key = (queue_id, per_creator if queue_id in PER_CREATOR_QUEUES else None, mask)
         with self.lock:
             if refresh or key not in self.queues:
                 self.queues[key] = self._build(queue_id, per_creator, mask, allow)
@@ -334,12 +400,20 @@ class MusicScout:
 
     def focus_ids(self) -> set[int]:
         """Every video id in Music Focus. Needs a signed-in client, but not the owner's."""
+        return set(self._focus_listing()[0])
+
+    def focus_creators(self) -> dict[str, str]:
+        """Everyone with a video in Music Focus, by casefolded username."""
+        return dict(self._focus_listing()[1])
+
+    def _focus_listing(self) -> tuple[set[int], dict[str, str]]:
         with self.focus_lock:
             if self.focus_ids_cache is not None and \
                     time.monotonic() - self.focus_loaded_at < FOCUS_TTL_SECONDS:
-                return set(self.focus_ids_cache)
+                return self.focus_ids_cache, self.focus_creators_cache
             client = self.social()
             ids: set[int] = set()
+            creators: dict[str, str] = {}
             cursor = None
             for _ in range(FOCUS_MAX_PAGES):
                 payload = {"collectionId": MUSIC_FOCUS["collectionId"], "sort": "Recently Added",
@@ -350,12 +424,105 @@ class MusicScout:
                 value = client.query("image.getInfinite", payload)
                 value = value if isinstance(value, dict) else {}
                 items = value.get("items") if isinstance(value.get("items"), list) else []
-                ids.update(int(row["id"]) for row in items if isinstance(row, dict) and row.get("id"))
+                for row in items:
+                    if not isinstance(row, dict) or not row.get("id"):
+                        continue
+                    ids.add(int(row["id"]))
+                    name = str((row.get("user") or {}).get("username") or "").strip()
+                    if name:
+                        creators.setdefault(name.casefold(), name)
                 cursor = value.get("nextCursor")
                 if not cursor or not items:
                     break
-            self.focus_ids_cache, self.focus_loaded_at = ids, time.monotonic()
-            return set(ids)
+            self.focus_ids_cache, self.focus_creators_cache = ids, creators
+            self.focus_loaded_at = time.monotonic()
+            return ids, creators
+
+    # -- MF hub -----------------------------------------------------------------------
+
+    def _hub_rows(self) -> dict[str, tuple]:
+        with self.viewed_lock:
+            return {row[0]: row[1:] for row in self.viewed_db.execute(
+                "SELECT username_key, username, mask, fetch_limit, fetched_at, entries FROM hub_latest")}
+
+    def _hub_fetch(self, username: str, mask: int, limit: int, direct: bool) -> list[dict]:
+        params = {"username": username, "type": "video", "sort": "Newest", "limit": limit,
+                  "browsingLevel": mask, "withMeta": "false"}
+        payload = public_listing(params) if direct else self.archive._request(params)[0]
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        return [entry for entry in (video_entry(raw, MUSIC_FOCUS["name"]) for raw in items) if entry]
+
+    def _hub_store(self, kind: str, key: str, username: str, mask: int, limit: int,
+                   direct: bool) -> None:
+        try:
+            entries = self._hub_fetch(username, mask, limit, direct)
+        except Exception:
+            # A renamed or deleted account answers with an error; it simply has no
+            # videos here rather than stopping everyone else's.
+            entries = []
+        with self.viewed_lock, self.viewed_db:
+            self.viewed_db.execute("INSERT OR REPLACE INTO hub_latest VALUES(?,?,?,?,?,?)",
+                                   (key, username, mask, limit, time.time(), json.dumps(entries)))
+        with self.hub_lock:
+            self.hub_jobs[kind]["done"] += 1
+
+    def _hub_run(self, kind: str, targets: list[tuple[str, str]], mask: int, limit: int) -> None:
+        try:
+            if kind == "build":
+                with ThreadPoolExecutor(max_workers=HUB_WORKERS, thread_name_prefix="mf-hub") as pool:
+                    list(pool.map(lambda target: self._hub_store(kind, *target, mask, limit, True),
+                                  targets))
+            else:
+                for target in targets:
+                    self._hub_store(kind, *target, mask, limit, False)
+        except Exception as error:  # noqa: BLE001 -- reported through HubBuilding
+            with self.hub_lock:
+                self.hub_jobs[kind]["error"] = str(error)
+        finally:
+            with self.hub_lock:
+                self.hub_jobs[kind]["running"] = False
+                self.hub_jobs[kind]["keys"] = set()
+
+    def _hub_start(self, kind: str, targets: list[tuple[str, str]], mask: int, limit: int) -> dict:
+        with self.hub_lock:
+            other = self.hub_jobs["refresh" if kind == "build" else "build"]["keys"]
+            targets = [target for target in targets if target[0] not in other]
+            job = self.hub_jobs[kind]
+            if not job["running"] and targets:
+                self.hub_jobs[kind] = job = {"running": True, "done": 0, "total": len(targets),
+                                             "error": None, "keys": {key for key, _ in targets}}
+                threading.Thread(target=self._hub_run, args=(kind, targets, mask, limit),
+                                 name=f"mf-hub-{kind}", daemon=True).start()
+            return dict(job)
+
+    def hub_entries(self, per_creator: int, mask: int) -> list[dict]:
+        """Every saved video from Music Focus creators, newest first.
+
+        Creators with nothing saved yet are read in the background and HubBuilding is
+        raised until they all have been. Saved results that are merely old are served
+        as they are while a background pass refreshes them.
+        """
+        creators = self.focus_creators()
+        limit = max(HUB_FETCH_MIN, per_creator)
+        rows = self._hub_rows()
+        missing, stale = [], []
+        for key, username in creators.items():
+            row = rows.get(key)
+            if row is None or row[1] != mask or row[2] < limit:
+                missing.append((key, username))
+            elif time.time() - row[3] > HUB_TTL_SECONDS:
+                stale.append((key, username))
+        if missing:
+            job = self._hub_start("build", missing, mask, limit)
+            if job["error"] and not job["running"]:
+                raise RuntimeError(job["error"])
+            # The build's own count: nothing else is folded in, so it cannot read as done
+            # while it is still running.
+            raise HubBuilding(job["done"] if job["running"] else 0,
+                              job["total"] if job["running"] else len(missing))
+        self._hub_start("refresh", stale, mask, limit)
+        entries = [entry for key in creators if key in rows for entry in json.loads(rows[key][4])]
+        return sorted(entries, key=lambda entry: str(entry.get("createdAt") or ""), reverse=True)
 
     def mark_focus(self, image_id: int) -> None:
         with self.focus_lock:

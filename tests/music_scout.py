@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from discovery.musicscout import MUSIC_FOCUS, MUSIC_MODELS, MusicScout
+from discovery.musicscout import HubBuilding, MUSIC_FOCUS, MUSIC_MODELS, MusicScout
 
 CDN = "https://image.civitai.com/key"
 
@@ -176,5 +176,50 @@ with tempfile.TemporaryDirectory() as folder:
     again = MusicScout(FakeArchive(pages), root=Path(folder)).page("latest", 0, 10)
     assert [item["viewed"] for item in again["items"]] == [False, True, False, False], again
     first.viewed_db.close()
+
+# -- MF hub: newest videos from Music Focus creators, capped, kept between sessions ----
+class HubSocial:
+    def query(self, procedure, payload):
+        return {"items": [{"id": 1, "user": {"username": "Ana"}}, {"id": 2, "user": {"username": "Bo"}},
+                          {"id": 3, "user": {"username": "ana"}}], "nextCursor": None}
+
+
+class HubArchive:
+    def __init__(self):
+        self.users = []
+
+    def _request(self, params, **_):
+        assert params["type"] == "video" and params["sort"] == "Newest", params
+        self.users.append(params["username"])
+        videos = {"Ana": [row(901, "Ana", 50), row(902, "Ana", 40), row(903, "Ana", 10)],
+                  "Bo": [row(911, "Bo", 45)]}[params["username"]]
+        return {"items": videos[:params["limit"]], "metadata": {}}, 100
+
+
+import time as _time
+import discovery.musicscout as musicscout
+with tempfile.TemporaryDirectory() as folder:
+    archive = HubArchive()
+    # The first build reads in parallel outside the lane; route it to the same fake.
+    musicscout.public_listing = lambda params: archive._request(params)[0]
+    hub = MusicScout(archive, social=lambda: HubSocial(), root=Path(folder))
+    try:
+        hub.page("mf-hub", 0, 10, per_creator=2)
+    except HubBuilding as building:
+        assert building.total == 2, building.total  # "Ana" and "ana" are one creator
+    else:
+        raise AssertionError("the first open must report that creators are being read")
+    for _ in range(100):
+        if not hub.hub_jobs["build"]["running"]:
+            break
+        _time.sleep(0.02)
+    page = hub.page("mf-hub", 0, 10, per_creator=2, refresh=True)
+    assert [item["id"] for item in page["items"]] == [901, 911, 902], page["items"]
+    assert sorted(archive.users) == ["Ana", "Bo"], archive.users
+    # Saved: a new session serves straight away, with no further requests.
+    later = MusicScout(HubArchive(), social=lambda: HubSocial(), root=Path(folder))
+    assert [item["id"] for item in later.page("mf-hub", 0, 10, per_creator=1)["items"]] == [901, 911]
+    assert later.archive.users == [], later.archive.users
+    hub.viewed_db.close(); later.viewed_db.close()
 
 print("music scout queues: ok")

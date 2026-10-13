@@ -43,7 +43,8 @@ Windows-only.
   It has three queues: the latest videos capped at a few per creator (3 by default), the
   latest videos that credit a music generation model (YuE2 3B, ACE-Step Audio Gen), and
   every latest video. Signed in, a fourth queue plays the Music Focus 🎸 collection in
-  recently added order. Only videos are requested, the next one buffers while the
+  recently added order, and MF hub plays the newest videos from every creator ever
+  collected there, capped per creator. Only videos are requested, the next one buffers while the
   current one plays, and a thumbnail strip shows the loaded queue. A video counts as
   viewed after a second on screen; viewed videos are faded in the strip and remembered
   across sessions, and a queue opens on the first one not viewed yet. Reactions and a 🎸
