@@ -252,6 +252,21 @@ export function mountMusicScout() {
   bindDialog(addDialog, { labelledBy: 'msFocusTitle', closeButtons: [$('msFocusClose'), $('msFocusCancel')] });
   bindDialog(removeDialog, { labelledBy: 'msRemoveTitle', closeButtons: [$('msRemoveClose'), $('msRemoveCancel')] });
   let addTarget = null;
+  // A dialog pauses the video. Closing it resumes only if nothing on Civitai was opened
+  // meanwhile, since that page could be playing the same audio in another tab.
+  let resumeAfterDialog = false;
+  function pauseForDialog() {
+    resumeAfterDialog = !current.paused;
+    current.pause();
+  }
+  for (const dialog of [addDialog, removeDialog]) {
+    dialog.addEventListener('close', () => {
+      if (resumeAfterDialog && state.active) play(current);
+      resumeAfterDialog = false;
+    });
+  }
+  $('msRemoveOpen').addEventListener('click', () => { resumeAfterDialog = false; });
+  for (const id of ['msCreator', 'msCivitai']) $(id).addEventListener('click', () => current.pause());
 
   function openAdd(item) {
     addTarget = item;
@@ -259,12 +274,14 @@ export function mountMusicScout() {
     $('msFocusComment').value = state.catalog.musicFocus.commentTemplate || '';
     $('msFocusError').classList.add('hidden');
     $('msFocusConfirm').disabled = false;
+    pauseForDialog();
     addDialog.showModal();
     $('msFocusComment').focus();
   }
 
   function openRemove(item) {
     $('msRemoveOpen').href = item.civitaiUrl;
+    pauseForDialog();
     removeDialog.showModal();
   }
 
