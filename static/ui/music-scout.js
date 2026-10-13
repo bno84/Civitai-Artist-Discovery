@@ -8,6 +8,11 @@ const PAGE = 20;
 // Ask for the next page while this many videos are still ahead of the reader.
 const PREFETCH_AHEAD = 6;
 const STATE_KEY = 'civitaiMusicScout';
+// A video counts as viewed once it has been the current one this long. Holding → to flick
+// past a run of thumbnails should not mark them all.
+const VIEWED_AFTER_MS = 1000;
+// How far a newly opened queue looks ahead for the first video not viewed yet.
+const SKIP_VIEWED_PAGES = 10;
 const REACTIONS = [['Like', '👍', 'likeCount'], ['Heart', '❤️', 'heartCount'],
   ['Laugh', '😂', 'laughCount'], ['Cry', '😢', 'cryCount']];
 const AUDIO_KEY = 'civitaiMusicScoutAudio';
@@ -176,6 +181,7 @@ export function mountMusicScout() {
     }
     for (const thumb of strip.children) {
       const selected = Number(thumb.dataset.index) === state.index;
+      thumb.classList.toggle('viewed', !!state.items[Number(thumb.dataset.index)]?.viewed);
       thumb.setAttribute('aria-selected', String(selected));
       if (selected) thumb.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
     }
@@ -425,6 +431,19 @@ export function mountMusicScout() {
     renderStrip(); renderMeta();
   }
 
+  let viewedTimer = 0;
+  function markViewedSoon(item) {
+    clearTimeout(viewedTimer);
+    if (!item || item.viewed || !state.active) return;
+    viewedTimer = setTimeout(() => {
+      if (!state.active || state.items[state.index] !== item) return;
+      item.viewed = true;
+      renderStrip();
+      api('/api/music/viewed', { method: 'POST', body: JSON.stringify({ imageId: item.id }) })
+        .catch(error => console.warn('Music Scout could not record a viewed video', error));
+    }, VIEWED_AFTER_MS);
+  }
+
   function show(index) {
     if (!state.items.length) return;
     index = Math.max(0, Math.min(state.items.length - 1, index));
@@ -441,6 +460,7 @@ export function mountMusicScout() {
       spare.pause();
       play(current);
       if (next) load(spare, next, 'auto'); else release(spare);
+      markViewedSoon(item);
     }
     renderStrip(); renderMeta();
     topUp().catch(error => message(error.message));
@@ -459,7 +479,9 @@ export function mountMusicScout() {
     }).catch(error => message(error.message));
   }
 
-  async function selectQueue(id, { force = false, index = 0, refresh = true } = {}) {
+  // Opening a queue starts at the first video not viewed yet; restoring after a reload
+  // passes the saved position instead.
+  async function selectQueue(id, { force = false, index = null, refresh = true } = {}) {
     if (id === state.queue && !force && state.items.length) return;
     state.token++;
     state.refresh = refresh;
@@ -478,9 +500,14 @@ export function mountMusicScout() {
     try {
       await fetchMore();
       if (token !== state.token) return;
-      while (state.items.length <= index && !state.exhausted && state.items.length) {
+      // Either reach the saved position, or the first video not viewed yet.
+      const reached = () => index !== null ? state.items.length > index
+        : state.items.some(item => !item.viewed);
+      let pages = 1;
+      while (!reached() && !state.exhausted && state.items.length && pages < SKIP_VIEWED_PAGES) {
         const before = state.items.length;
         await fetchMore();
+        pages++;
         if (token !== state.token || state.items.length === before) break;
       }
       if (token !== state.token) return;
@@ -489,10 +516,22 @@ export function mountMusicScout() {
           : 'No videos were found yet. Select the queue again to keep looking.');
         return;
       }
-      message('');
+      let start = index ?? state.items.findIndex(item => !item.viewed);
+      if (index !== null || start === 0) message('');
+      else if (start > 0) {
+        const note = `Skipped ${start} ${start === 1 ? 'video' : 'videos'} you have already viewed.`;
+        message(note);
+        setTimeout(() => { if ($('msMessage').textContent === note) message(''); }, 6000);
+      }
+      else {
+        // Everything loaded so far was viewed: carry on from the end of it.
+        start = state.items.length - 1;
+        message(state.exhausted ? 'You have viewed every video in this queue.'
+          : `The first ${state.items.length} videos were all viewed; carrying on from there.`);
+      }
       $('msPlayer').classList.remove('hidden');
       fit();
-      show(Math.min(index, state.items.length - 1));
+      show(Math.min(start, state.items.length - 1));
     } catch (error) {
       if (token === state.token) message(error.message);
     }
@@ -537,6 +576,7 @@ export function mountMusicScout() {
     if (!state.active) {
       // Leaving the tab silences it and drops both downloads; coming back resumes the
       // video the reader was on.
+      clearTimeout(viewedTimer);
       release(current); release(spare);
       return;
     }

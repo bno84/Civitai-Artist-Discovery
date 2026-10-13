@@ -44,7 +44,9 @@ Windows-only.
   latest videos that credit a music generation model (YuE2 3B, ACE-Step Audio Gen), and
   every latest video. Signed in, a fourth queue plays the Music Focus 🎸 collection in
   recently added order. Only videos are requested, the next one buffers while the
-  current one plays, and a thumbnail strip shows the loaded queue. Reactions and a 🎸
+  current one plays, and a thumbnail strip shows the loaded queue. A video counts as
+  viewed after a second on screen; viewed videos are faded in the strip and remembered
+  across sessions, and a queue opens on the first one not viewed yet. Reactions and a 🎸
   marker showing whether the video is in Music Focus sit beside each video. Only the
   collection's owner can add from here: either with the default comment, posted as is,
   or by copying that comment and doing both steps on Civitai. Removing is left to

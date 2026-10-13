@@ -42,6 +42,10 @@
 .ms-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: .7; }
 .ms-thumb:hover img, .ms-thumb[aria-selected="true"] img { opacity: 1; }
 .ms-thumb[aria-selected="true"] { border-color: var(--accent); }
+/* Already viewed: faded, so the unwatched part of the queue stands out. */
+.ms-thumb.viewed img { opacity: .25; filter: grayscale(.6); }
+.ms-thumb.viewed:hover img { opacity: .6; }
+.ms-thumb.viewed[aria-selected="true"] img { opacity: 1; filter: none; }
 .ms-thumb span { position: absolute; right: 4px; bottom: 2px; font-size: 11px; color: #fff; text-shadow: 0 1px 3px #000; }
 .ms-thumb-missing { background: var(--surface-raised); }
 .ms-keys { color: var(--muted); font-size: 12px; text-align: center; }

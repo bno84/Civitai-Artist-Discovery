@@ -164,4 +164,17 @@ assert scout.focus_ids() == {1, 2, 3} and members.calls == 2
 scout.mark_focus(4)
 assert scout.focus_ids() == {1, 2, 3, 4} and members.calls == 2, "a fresh cache must not refetch"
 
+# -- viewed videos persist and are flagged on every later answer ----------------------
+import tempfile
+with tempfile.TemporaryDirectory() as folder:
+    pages = {("all", None): ([row(500 + i, f"V{i}", 59 - i) for i in range(4)], None)}
+    first = MusicScout(FakeArchive(pages), root=Path(folder))
+    page = first.page("latest", 0, 10)
+    assert not any(item["viewed"] for item in page["items"]), page
+    first.mark_viewed(501)
+    assert "viewed" not in first.served_entry(501), "the shared entry must not carry the flag"
+    again = MusicScout(FakeArchive(pages), root=Path(folder)).page("latest", 0, 10)
+    assert [item["viewed"] for item in again["items"]] == [False, True, False, False], again
+    first.viewed_db.close()
+
 print("music scout queues: ok")

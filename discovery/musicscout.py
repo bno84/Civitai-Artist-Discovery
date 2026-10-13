@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import threading
 
+from pathlib import Path
+import sqlite3
 import time
 import urllib.parse
 
@@ -251,7 +253,7 @@ class Queue:
 class MusicScout:
     """The queues in use, keyed by everything that changes what they contain."""
 
-    def __init__(self, archive, social=None):
+    def __init__(self, archive, social=None, root: Path | None = None):
         # The archive's request path carries the shared API lane and adaptive pacing, so a
         # queue page waits its turn behind a day build rather than racing it.
         self.archive = archive
@@ -266,6 +268,31 @@ class MusicScout:
         self.focus_ids_cache: set[int] | None = None
         self.focus_loaded_at = 0.0
         self.focus_lock = threading.Lock()
+        # Which videos the reader has already watched, kept across sessions so a queue
+        # can open on the first one not seen yet. Its own small database: it is personal
+        # history, unrelated to the daily archive or the taste profile.
+        if root is not None:
+            root.mkdir(parents=True, exist_ok=True)
+        self.viewed_db = sqlite3.connect(":memory:" if root is None else root / "musicscout.sqlite3",
+                                         check_same_thread=False)
+        self.viewed_lock = threading.Lock()
+        with self.viewed_lock, self.viewed_db:
+            self.viewed_db.execute("CREATE TABLE IF NOT EXISTS viewed("
+                                   "image_id INTEGER PRIMARY KEY, viewed_at TEXT NOT NULL)")
+
+    def viewed_ids(self, image_ids) -> set[int]:
+        ids = [int(value) for value in image_ids]
+        if not ids:
+            return set()
+        with self.viewed_lock:
+            marks = ",".join("?" * len(ids))
+            return {row[0] for row in self.viewed_db.execute(
+                f"SELECT image_id FROM viewed WHERE image_id IN ({marks})", ids)}
+
+    def mark_viewed(self, image_id: int) -> None:
+        with self.viewed_lock, self.viewed_db:
+            self.viewed_db.execute("INSERT OR IGNORE INTO viewed(image_id, viewed_at) VALUES(?, ?)",
+                                   (int(image_id), time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
 
     def _build(self, queue_id: str, per_creator: int, mask: int, allow) -> Queue:
         request = self.archive._request
@@ -300,6 +327,9 @@ class MusicScout:
         result = queue.page(offset, limit)
         with self.lock:
             self.served.update((entry["id"], entry) for entry in result["items"])
+        viewed = self.viewed_ids(entry["id"] for entry in result["items"])
+        # A copy per answer: the flag belongs to this moment, not to the shared entry.
+        result["items"] = [{**entry, "viewed": entry["id"] in viewed} for entry in result["items"]]
         return {"queue": queue_id, "offset": offset, **result}
 
     def focus_ids(self) -> set[int]:

@@ -63,7 +63,8 @@ CAPTURE = AutoCapture(HISTORY, SETTINGS)
 # than racing it for the same API budget.
 TIME_MACHINE = TimeMachine(DATA_ROOT / "discovery", HISTORY, TASTE)
 # In-memory video queues; they share the same paced request lane.
-MUSIC_SCOUT = MusicScout(HISTORY, social=lambda: music_scout_client())
+MUSIC_SCOUT = MusicScout(HISTORY, social=lambda: music_scout_client(),
+                         root=DATA_ROOT / "discovery")
 WRITE_LOCK = threading.Lock()
 HISTORY.on_block_complete = lambda key, merged: prepare_finished_block(key, merged)
 
@@ -1902,6 +1903,13 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/app/close":
                 self.json_response({"closing": True})
                 request_app_shutdown(self.server)
+                return
+            if parsed.path == "/api/music/viewed":
+                image_id = int(body.get("imageId"))
+                if not MUSIC_SCOUT.served_entry(image_id):
+                    raise ValueError("Only videos Music Scout has shown can be marked viewed")
+                MUSIC_SCOUT.mark_viewed(image_id)
+                self.json_response({"imageId": image_id, "viewed": True})
                 return
             if parsed.path == "/api/music/focus":
                 # Adding only, always with the owner's default comment. A different
