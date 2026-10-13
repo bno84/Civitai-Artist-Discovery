@@ -1,0 +1,8 @@
+# Send only what the image copies. Everything else, notably data/ with its archives and
+# account-derived files, stays out of the build context.
+*
+!requirements.txt
+!server.py
+!discovery/*.py
+!static/
+!container/open_url.py

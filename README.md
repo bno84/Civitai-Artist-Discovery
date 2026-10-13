@@ -159,6 +159,20 @@ python -m pip install -r requirements.txt
 python server.py
 ```
 
+Experimental Linux container launch, which keeps Python and its packages off the host:
+
+```bash
+podman compose up --build
+```
+
+`compose.yaml` builds a rootless Podman image from the checkout (`container/`) and runs
+it as your own user with host networking and your desktop's D-Bus session. Credentials
+therefore still go to the desktop Secret Service, the browser opens through the desktop
+portal, and `data/` beside the checkout is shared with source launches. The container is
+a sandbox for one person on one desktop, not a way to host the app. Changing **LAN
+access** in Settings stops the container instead of restarting the app; the new setting
+takes effect on the next `up`.
+
 The executable is a local Python/SQLite server; the browser tab is its interface rather
 than a standalone webpage. The server listens only on the local computer and opens the
 application in your default browser. On Windows, its notification-area icon remains

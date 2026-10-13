@@ -1,0 +1,23 @@
+# Run-from-source image for desktop Linux. It keeps Python and the app's dependencies
+# off the host; it is not a hosted or multi-user deployment. compose.yaml runs it with
+# host networking (the OAuth redirect targets localhost:8765) and the desktop's D-Bus
+# session (Secret Service for credentials, the OpenURI portal for the browser).
+FROM docker.io/library/python:3.14-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    BROWSER=/app/container/open_url.py
+
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
+
+COPY server.py ./
+COPY discovery/ discovery/
+COPY static/ static/
+COPY --chmod=755 container/open_url.py container/
+
+# /app/data is the portable data folder the app already uses beside a source checkout;
+# mount it from the host so archives and settings outlive the container.
+VOLUME /app/data
+ENTRYPOINT ["python", "/app/server.py"]
