@@ -27,6 +27,7 @@ from __future__ import annotations
 import threading
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 import json
 from pathlib import Path
 import sqlite3
@@ -72,14 +73,28 @@ MUSIC_FOCUS = {"collectionId": 17980935, "name": "Music Focus 🎸",
 FOCUS_TTL_SECONDS = 600
 FOCUS_PAGE_SIZE = 200
 FOCUS_MAX_PAGES = 50
-# MF hub: each Music Focus creator's newest videos, one public request per creator. The
-# results are kept between sessions and reread once they are this old.
-HUB_TTL_SECONDS = 1800
+# MF hub: each Music Focus creator's newest videos. Two public reads keep that list:
+#
+# - Per creator, the creator's latest few videos: complete, one request each. 112
+#   creators take about 8 seconds four at a time when Civitai has nothing cached. This
+#   runs for creators with nothing saved, and as a fallback.
+# - The global newest-videos feed, filtered to these creators. Anything a creator posted
+#   after their list was saved has to appear in it after that moment, so catching up is
+#   only the pages since the last read: 200 PG/PG-13 videos span about five hours. It
+#   cannot replace the per-creator read: a creator whose newest video is a week old is
+#   some 35 sequential pages deep, and a third had posted nothing in two weeks.
+#
+# Saved results are reused only while this fresh; after that they are caught up before
+# serving, since a stale "newest" list misses exactly what the queue is for.
+HUB_TTL_SECONDS = 300
+# A catch-up reaching further back than this rereads every creator instead.
+HUB_CATCHUP_PAGES = 15
+# Overlap with the previous read, for videos the feed lists a little late.
+HUB_CATCHUP_MARGIN_SECONDS = 900
 # Fetched per creator even when the cap is lower, so raising it a little needs no refetch.
 HUB_FETCH_MIN = 5
-# The first read of creators with nothing saved is one the reader is waiting on, so it
-# runs a few requests at a time outside the shared lane: 111 creators took 84 seconds one
-# by one. Refreshing saved results stays sequential, in the background, on the lane.
+# The reader is waiting, so this runs a few requests at a time outside the shared lane:
+# 111 creators took 84 seconds one by one on the lane and about one second this way.
 HUB_WORKERS = 4
 HUB_USER_AGENT = "CivitaiArtistDiscovery/1.0 (local artist discovery app)"
 CDN_ROOT = "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA"
@@ -123,6 +138,26 @@ def public_listing(params: dict, attempts: int = 3) -> dict:
                 raise
             time.sleep(2.0 * (attempt + 1))
     raise RuntimeError("unreachable")
+
+
+def _feed_position(cursor: object, items: list) -> float | None:
+    """How far back, as a Unix time, a newest-first feed page has reached.
+
+    The feed's cursor is ``feed:<milliseconds>:<id>`` for the ordering time, which can be
+    later than createdAt; the page's oldest createdAt stands in when it is not.
+    """
+    if isinstance(cursor, str) and cursor.startswith("feed:"):
+        try:
+            return int(cursor.split(":")[1]) / 1000
+        except (IndexError, ValueError):
+            pass
+    times = []
+    for raw in items:
+        try:
+            times.append(datetime.fromisoformat(str(raw.get("createdAt")).replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            continue
+    return min(times) if times else None
 
 
 class HubBuilding(Exception):
@@ -319,10 +354,8 @@ class MusicScout:
         self.focus_creators_cache: dict[str, str] = {}
         self.focus_loaded_at = 0.0
         self.focus_lock = threading.Lock()
-        # "build" reads creators with nothing saved, in parallel, while the reader waits;
-        # "refresh" rereads old results one at a time in the background.
-        self.hub_jobs = {kind: {"running": False, "done": 0, "total": 0, "error": None,
-                                "keys": set()} for kind in ("build", "refresh")}
+        self.hub_job = {"running": False, "done": 0, "total": 0, "error": None}
+        self.hub_catchup_lock = threading.Lock()
         self.hub_lock = threading.Lock()
         # Which videos the reader has already watched, kept across sessions so a queue
         # can open on the first one not seen yet. Its own small database: it is personal
@@ -445,17 +478,16 @@ class MusicScout:
             return {row[0]: row[1:] for row in self.viewed_db.execute(
                 "SELECT username_key, username, mask, fetch_limit, fetched_at, entries FROM hub_latest")}
 
-    def _hub_fetch(self, username: str, mask: int, limit: int, direct: bool) -> list[dict]:
+    def _hub_fetch(self, username: str, mask: int, limit: int) -> list[dict]:
         params = {"username": username, "type": "video", "sort": "Newest", "limit": limit,
                   "browsingLevel": mask, "withMeta": "false"}
-        payload = public_listing(params) if direct else self.archive._request(params)[0]
+        payload = public_listing(params)
         items = payload.get("items") if isinstance(payload.get("items"), list) else []
         return [entry for entry in (video_entry(raw, MUSIC_FOCUS["name"]) for raw in items) if entry]
 
-    def _hub_store(self, kind: str, key: str, username: str, mask: int, limit: int,
-                   direct: bool) -> None:
+    def _hub_store(self, key: str, username: str, mask: int, limit: int) -> None:
         try:
-            entries = self._hub_fetch(username, mask, limit, direct)
+            entries = self._hub_fetch(username, mask, limit)
         except Exception:
             # A renamed or deleted account answers with an error; it simply has no
             # videos here rather than stopping everyone else's.
@@ -464,63 +496,98 @@ class MusicScout:
             self.viewed_db.execute("INSERT OR REPLACE INTO hub_latest VALUES(?,?,?,?,?,?)",
                                    (key, username, mask, limit, time.time(), json.dumps(entries)))
         with self.hub_lock:
-            self.hub_jobs[kind]["done"] += 1
+            self.hub_job["done"] += 1
 
-    def _hub_run(self, kind: str, targets: list[tuple[str, str]], mask: int, limit: int) -> None:
+    def _hub_run(self, targets: list[tuple[str, str]], mask: int, limit: int) -> None:
         try:
-            if kind == "build":
-                with ThreadPoolExecutor(max_workers=HUB_WORKERS, thread_name_prefix="mf-hub") as pool:
-                    list(pool.map(lambda target: self._hub_store(kind, *target, mask, limit, True),
-                                  targets))
-            else:
-                for target in targets:
-                    self._hub_store(kind, *target, mask, limit, False)
+            with ThreadPoolExecutor(max_workers=HUB_WORKERS, thread_name_prefix="mf-hub") as pool:
+                list(pool.map(lambda target: self._hub_store(*target, mask, limit), targets))
         except Exception as error:  # noqa: BLE001 -- reported through HubBuilding
             with self.hub_lock:
-                self.hub_jobs[kind]["error"] = str(error)
+                self.hub_job["error"] = str(error)
         finally:
             with self.hub_lock:
-                self.hub_jobs[kind]["running"] = False
-                self.hub_jobs[kind]["keys"] = set()
+                self.hub_job["running"] = False
 
-    def _hub_start(self, kind: str, targets: list[tuple[str, str]], mask: int, limit: int) -> dict:
+    def _hub_start(self, targets: list[tuple[str, str]], mask: int, limit: int) -> dict:
         with self.hub_lock:
-            other = self.hub_jobs["refresh" if kind == "build" else "build"]["keys"]
-            targets = [target for target in targets if target[0] not in other]
-            job = self.hub_jobs[kind]
-            if not job["running"] and targets:
-                self.hub_jobs[kind] = job = {"running": True, "done": 0, "total": len(targets),
-                                             "error": None, "keys": {key for key, _ in targets}}
-                threading.Thread(target=self._hub_run, args=(kind, targets, mask, limit),
-                                 name=f"mf-hub-{kind}", daemon=True).start()
-            return dict(job)
+            if not self.hub_job["running"]:
+                self.hub_job = {"running": True, "done": 0, "total": len(targets), "error": None}
+                threading.Thread(target=self._hub_run, args=(targets, mask, limit),
+                                 name="mf-hub", daemon=True).start()
+            return dict(self.hub_job)
+
+    def _hub_catch_up(self, creators: dict[str, str], rows: dict[str, tuple], mask: int,
+                      since: float) -> bool:
+        """Merge what these creators posted since ``since`` from the global feed.
+
+        Returns False, changing nothing, when that is further back than the feed is
+        worth paging.
+        """
+        started = time.time()
+        found: dict[str, list[dict]] = {}
+        cursor = None
+        for _ in range(HUB_CATCHUP_PAGES):
+            params = {"type": "video", "sort": "Newest", "limit": 200, "browsingLevel": mask,
+                      "withMeta": "false"}
+            if cursor:
+                params["cursor"] = cursor
+            payload = public_listing(params)
+            items = payload.get("items") if isinstance(payload.get("items"), list) else []
+            for raw in items:
+                key = str(raw.get("username") or "").casefold()
+                if key in creators and (entry := video_entry(raw, MUSIC_FOCUS["name"])):
+                    found.setdefault(key, []).append(entry)
+            cursor = (payload.get("metadata") or {}).get("nextCursor")
+            reached = _feed_position(cursor, items)
+            if not cursor or not items or (
+                    reached is not None and reached < since - HUB_CATCHUP_MARGIN_SECONDS):
+                break
+        else:
+            return False
+        with self.viewed_lock, self.viewed_db:
+            for key in creators:
+                username, row_mask, fetch_limit, _, saved = rows[key]
+                entries = json.loads(saved)
+                if key in found:
+                    by_id = {entry["id"]: entry for entry in entries}
+                    by_id.update((entry["id"], entry) for entry in found[key])
+                    entries = sorted(by_id.values(), key=lambda entry: str(entry.get("createdAt") or ""),
+                                     reverse=True)[:fetch_limit]
+                self.viewed_db.execute("INSERT OR REPLACE INTO hub_latest VALUES(?,?,?,?,?,?)",
+                                       (key, username, row_mask, fetch_limit, started, json.dumps(entries)))
+        return True
 
     def hub_entries(self, per_creator: int, mask: int) -> list[dict]:
-        """Every saved video from Music Focus creators, newest first.
+        """Every Music Focus creator's newest videos, newest first.
 
-        Creators with nothing saved yet are read in the background and HubBuilding is
-        raised until they all have been. Saved results that are merely old are served
-        as they are while a background pass refreshes them.
+        Creators with nothing saved are read one by one, in parallel, and HubBuilding is
+        raised until they all have been. Saved lists older than HUB_TTL_SECONDS are caught
+        up from the global feed first, or reread if that reaches too far back. A stale
+        answer is never served.
         """
+        with self.hub_lock:
+            job = dict(self.hub_job)
+        if job["running"]:
+            raise HubBuilding(job["done"], job["total"])
         creators = self.focus_creators()
         limit = max(HUB_FETCH_MIN, per_creator)
         rows = self._hub_rows()
-        missing, stale = [], []
-        for key, username in creators.items():
-            row = rows.get(key)
-            if row is None or row[1] != mask or row[2] < limit:
-                missing.append((key, username))
-            elif time.time() - row[3] > HUB_TTL_SECONDS:
-                stale.append((key, username))
+        missing = [(key, username) for key, username in creators.items()
+                   if (row := rows.get(key)) is None or row[1] != mask or row[2] < limit]
         if missing:
-            job = self._hub_start("build", missing, mask, limit)
+            job = self._hub_start(missing, mask, limit)
             if job["error"] and not job["running"]:
                 raise RuntimeError(job["error"])
-            # The build's own count: nothing else is folded in, so it cannot read as done
-            # while it is still running.
-            raise HubBuilding(job["done"] if job["running"] else 0,
-                              job["total"] if job["running"] else len(missing))
-        self._hub_start("refresh", stale, mask, limit)
+            raise HubBuilding(job["done"], job["total"])
+        with self.hub_catchup_lock:
+            rows = self._hub_rows()
+            since = min((rows[key][3] for key in creators), default=time.time())
+            if time.time() - since > HUB_TTL_SECONDS and \
+                    not self._hub_catch_up(creators, rows, mask, since):
+                job = self._hub_start(list(creators.items()), mask, limit)
+                raise HubBuilding(job["done"], job["total"])
+            rows = self._hub_rows()
         entries = [entry for key in creators if key in rows for entry in json.loads(rows[key][4])]
         return sorted(entries, key=lambda entry: str(entry.get("createdAt") or ""), reverse=True)
 

@@ -13,6 +13,12 @@ const STATE_KEY = 'civitaiMusicScout';
 const VIEWED_AFTER_MS = 1000;
 // How far a newly opened queue looks ahead for the first video not viewed yet.
 const SKIP_VIEWED_PAGES = 10;
+// Civitai's CDN sometimes hangs on a file rather than failing. A video or thumbnail that
+// has not arrived by then is dropped instead of holding the player or a connection.
+const LOAD_TIMEOUT_MS = 10000;
+// A saved place is only restored while recent; after that the queue opens fresh, since
+// an old list misses what has been posted since.
+const RESTORE_FRESH_MS = 5 * 60 * 1000;
 const REACTIONS = [['Like', '👍', 'likeCount'], ['Heart', '❤️', 'heartCount'],
   ['Laugh', '😂', 'laughCount'], ['Cry', '😢', 'cryCount']];
 const AUDIO_KEY = 'civitaiMusicScoutAudio';
@@ -63,13 +69,46 @@ export function mountMusicScout() {
     });
     video.addEventListener('error', () => {
       if (video !== current || !video.getAttribute('src')) return;
+      clearTimeout(loadTimer);
       showVideoError('This video could not be played. Press → for the next one.');
     });
+    video.addEventListener('canplay', () => { if (video === current) clearTimeout(loadTimer); });
   }
+
+  let loadTimer = 0;
+  function watchLoad(video, item) {
+    clearTimeout(loadTimer);
+    if (video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return;
+    loadTimer = setTimeout(() => {
+      if (video !== current || video.dataset.itemId !== String(item.id) ||
+          video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return;
+      release(video);
+      showVideoError('This video did not load within 10 seconds. Press → for the next one.');
+    }, LOAD_TIMEOUT_MS);
+  }
+
+  // Thumbnails load as they scroll into the strip, each with the same time limit. Native
+  // lazy loading gives no start time to measure that from.
+  const thumbLoader = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const image = entry.target;
+      thumbLoader.unobserve(image);
+      const fail = () => { image.remove(); image.thumb?.classList.add('ms-thumb-missing'); };
+      const timer = setTimeout(() => {
+        if (image.complete && image.naturalWidth) return;
+        image.removeAttribute('src');
+        fail();
+      }, LOAD_TIMEOUT_MS);
+      image.addEventListener('load', () => clearTimeout(timer), { once: true });
+      image.addEventListener('error', () => { clearTimeout(timer); fail(); }, { once: true });
+      image.src = image.dataset.src;
+    }
+  }, { root: $('msStrip'), rootMargin: '0px 400px' });
 
   function remember() {
     sessionStorage.setItem(STATE_KEY, JSON.stringify({
-      queue: state.queue, perCreator: state.perCreator, index: state.index,
+      queue: state.queue, perCreator: state.perCreator, index: state.index, savedAt: Date.now(),
     }));
   }
 
@@ -167,12 +206,12 @@ export function mountMusicScout() {
       thumb.title = `${item.username} · ${formatDate(item.createdAt)}`;
       thumb.dataset.index = String(index);
       const image = document.createElement('img');
-      image.loading = 'lazy';
       image.decoding = 'async';
       image.alt = item.username;
       image.referrerPolicy = 'no-referrer';
-      image.addEventListener('error', () => { image.remove(); thumb.classList.add('ms-thumb-missing'); }, { once: true });
-      image.src = item.stillUrl;
+      image.dataset.src = item.stillUrl;
+      image.thumb = thumb;
+      thumbLoader.observe(image);
       const number = document.createElement('span');
       number.textContent = String(index + 1);
       thumb.append(image, number);
@@ -461,6 +500,7 @@ export function mountMusicScout() {
       current.hidden = false; spare.hidden = true;
       spare.pause();
       play(current);
+      watchLoad(current, item);
       if (next) load(spare, next, 'auto'); else release(spare);
       markViewedSoon(item);
     }
@@ -494,6 +534,7 @@ export function mountMusicScout() {
     // Once a queue is chosen the picker shrinks to one row of buttons.
     $('musicScout').classList.add('ms-selected');
     release(current); release(spare);
+    thumbLoader.disconnect();
     $('msStrip').replaceChildren();
     $('msPlayer').classList.add('hidden');
     remember();
@@ -503,7 +544,7 @@ export function mountMusicScout() {
       await fetchMore();
       while (state.building && token === state.token) {
         message(`Reading Music Focus creators… ${state.building.done}/${state.building.total}`);
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        await new Promise(resolve => setTimeout(resolve, 500));
         if (token === state.token) await fetchMore();
       }
       if (token !== state.token) return;
@@ -569,7 +610,8 @@ export function mountMusicScout() {
     state.perCreator = Number(saved.perCreator) || state.catalog.perCreatorDefault;
     renderQueues();
     if (saved.queue && state.catalog.queues.some(queue => queue.id === saved.queue)) {
-      selectQueue(saved.queue, { index: Number(saved.index) || 0, refresh: false });
+      const recent = Date.now() - (Number(saved.savedAt) || 0) < RESTORE_FRESH_MS;
+      selectQueue(saved.queue, recent ? { index: Number(saved.index) || 0, refresh: false } : {});
     }
   }
 
@@ -579,6 +621,7 @@ export function mountMusicScout() {
       // Leaving the tab silences it and drops both downloads; coming back resumes the
       // video the reader was on.
       clearTimeout(viewedTimer);
+      clearTimeout(loadTimer);
       release(current); release(spare);
       return;
     }

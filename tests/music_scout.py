@@ -210,7 +210,7 @@ with tempfile.TemporaryDirectory() as folder:
     else:
         raise AssertionError("the first open must report that creators are being read")
     for _ in range(100):
-        if not hub.hub_jobs["build"]["running"]:
+        if not hub.hub_job["running"]:
             break
         _time.sleep(0.02)
     page = hub.page("mf-hub", 0, 10, per_creator=2, refresh=True)
@@ -220,6 +220,54 @@ with tempfile.TemporaryDirectory() as folder:
     later = MusicScout(HubArchive(), social=lambda: HubSocial(), root=Path(folder))
     assert [item["id"] for item in later.page("mf-hub", 0, 10, per_creator=1)["items"]] == [901, 911]
     assert later.archive.users == [], later.archive.users
+    # Older than the freshness window: caught up from the global feed before serving.
+    # Only the pages since the last read are asked for, and only Music Focus creators kept.
+    with later.viewed_lock, later.viewed_db:
+        later.viewed_db.execute("UPDATE hub_latest SET fetched_at = ?", (_time.time() - 3600,))
+    feed_calls = []
+
+    def feed(params):
+        assert "username" not in params and params["type"] == "video", params
+        feed_calls.append(params.get("cursor"))
+        fresh = dict(row(950, "Ana", 59)); fresh["createdAt"] = "2099-01-01T00:00:00.000Z"
+        stranger = dict(row(951, "Zed", 58)); stranger["createdAt"] = "2099-01-01T00:00:00.000Z"
+        # The cursor's ordering time is two hours ago: older than the last read, so done.
+        cursor = f"feed:{int((_time.time() - 7200) * 1000)}:1"
+        return {"items": [fresh, stranger], "metadata": {"nextCursor": cursor}}
+
+    musicscout.public_listing = feed
+    caught = later.page("mf-hub", 0, 10, per_creator=1, refresh=True)
+    assert [item["id"] for item in caught["items"]] == [950, 911], caught["items"]
+    assert feed_calls == [None], feed_calls
+    assert later.archive.users == [], "catching up must not reread every creator"
+    # Just caught up: the next open reads nothing at all.
+    later.page("mf-hub", 0, 10, per_creator=1, refresh=True)
+    assert feed_calls == [None], feed_calls
+
+    # A gap the feed cannot cover in its page budget falls back to rereading everyone.
+    with later.viewed_lock, later.viewed_db:
+        later.viewed_db.execute("UPDATE hub_latest SET fetched_at = ?", (_time.time() - 30 * 86400,))
+    feed_calls.clear()
+
+    def endless(params):
+        if "username" in params:
+            return archive._request(params)[0]
+        feed_calls.append(params.get("cursor"))
+        return {"items": [row(960 + len(feed_calls), "Zed", 1)],
+                "metadata": {"nextCursor": f"feed:{int(_time.time() * 1000)}:{len(feed_calls)}"}}
+
+    musicscout.public_listing = endless
+    try:
+        later.page("mf-hub", 0, 10, per_creator=1, refresh=True)
+    except HubBuilding:
+        pass
+    else:
+        raise AssertionError("a gap too long for the feed must reread every creator")
+    assert len(feed_calls) == musicscout.HUB_CATCHUP_PAGES, len(feed_calls)
+    for _ in range(100):
+        if not later.hub_job["running"]:
+            break
+        _time.sleep(0.02)
     hub.viewed_db.close(); later.viewed_db.close()
 
 print("music scout queues: ok")
