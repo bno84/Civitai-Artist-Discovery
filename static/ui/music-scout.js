@@ -16,6 +16,8 @@ const SKIP_VIEWED_PAGES = 10;
 // Civitai's CDN sometimes hangs on a file rather than failing. A video or thumbnail that
 // has not arrived by then is dropped instead of holding the player or a connection.
 const LOAD_TIMEOUT_MS = 10000;
+// The playing video restarts its download after each timeout, this many tries in all.
+const LOAD_ATTEMPTS = 3;
 // A saved place is only restored while recent; after that the queue opens fresh, since
 // an old list misses what has been posted since.
 const RESTORE_FRESH_MS = 5 * 60 * 1000;
@@ -75,18 +77,30 @@ export function mountMusicScout() {
       clearTimeout(loadTimer);
       showVideoError('This video could not be played. Press → for the next one.');
     });
-    video.addEventListener('canplay', () => { if (video === current) clearTimeout(loadTimer); });
+    video.addEventListener('canplay', () => {
+      if (video !== current) return;
+      clearTimeout(loadTimer);
+      if ($('msVideoError').dataset.kind === 'retry') showVideoError('');
+    });
   }
 
   let loadTimer = 0;
-  function watchLoad(video, item) {
+  // A stalled download is usually one hung connection; starting it again tends to work.
+  function watchLoad(video, item, attempt = 1) {
     clearTimeout(loadTimer);
     if (video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return;
     loadTimer = setTimeout(() => {
       if (video !== current || video.dataset.itemId !== String(item.id) ||
           video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return;
       release(video);
-      showVideoError('This video did not load within 10 seconds. Press → for the next one.');
+      if (attempt >= LOAD_ATTEMPTS) {
+        showVideoError(`This video did not load after ${LOAD_ATTEMPTS} tries. Press → for the next one.`);
+        return;
+      }
+      showVideoError(`Still loading… retrying (${attempt + 1}/${LOAD_ATTEMPTS})`, 'retry');
+      load(video, item, 'auto');
+      play(video);
+      watchLoad(video, item, attempt + 1);
     }, LOAD_TIMEOUT_MS);
   }
 
@@ -116,8 +130,9 @@ export function mountMusicScout() {
   }
 
   function message(text) { $('msMessage').textContent = text || ''; }
-  function showVideoError(text) {
+  function showVideoError(text, kind = 'error') {
     $('msVideoError').textContent = text || '';
+    $('msVideoError').dataset.kind = kind;
     $('msVideoError').classList.toggle('hidden', !text);
   }
 
@@ -669,6 +684,8 @@ export function mountMusicScout() {
     if (document.querySelector('dialog[open]')) return;
     if (event.key === 'ArrowRight') step(1);
     else if (event.key === 'ArrowLeft') step(-1);
+    // The top of the queue, whatever has been viewed; opening a queue skips viewed ones.
+    else if (event.key === 'Home') show(0);
     else if (event.key === ' ' || event.key === 'k') {
       // The focused native control would toggle playback a second time.
       if (target === current) return;
