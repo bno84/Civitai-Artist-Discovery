@@ -49,7 +49,10 @@ export function mountMusicScout() {
     auth: { connected: false, socialWrite: false },
     // Set by the server: only the collection's owner may add to it from here.
     canAddFocus: false,
-    reacted: new Map(), reacting: new Set(),
+    // The account's reactions per video id: as last known, with local clicks applied at
+    // once. `baseline` is what they were when the video's listing counts were read, so a
+    // count shown is the listing's count adjusted by the reader's own change since.
+    reacted: new Map(), baseline: new Map(), reactionQueue: new Map(),
     // Whether each video is in the Music Focus collection, by id; absent means unknown.
     focus: new Map(), focusing: new Set(),
     muted: audio.muted === true, volume: Number.isFinite(audio.volume) ? audio.volume : 1,
@@ -248,6 +251,9 @@ export function mountMusicScout() {
     for (const item of items) params.append('imageId', String(item.id));
     api(`/api/reaction-status?${params}`).then(result => {
       for (const [id, value] of Object.entries(result.images || {})) {
+        // A click made before this answer arrived is newer than it; keep the click.
+        if (state.baseline.has(id)) continue;
+        state.baseline.set(id, new Set(value.reactions || []));
         state.reacted.set(id, new Set(value.reactions || []));
       }
       renderReactions();
@@ -396,8 +402,14 @@ export function mountMusicScout() {
     if (!item) { host.replaceChildren(); return; }
     const stats = item.stats || {};
     const mine = state.reacted.get(String(item.id));
+    const base = state.baseline.get(String(item.id));
+    // Civitai's own counts trail a reaction by a while, so the reader's change is applied
+    // here instead of trusting a count read back moments after it.
+    const count = (name, key) => Math.max(0, Number(stats[key] || 0) +
+      (mine?.has(name) ? 1 : 0) - (base?.has(name) ? 1 : 0));
     const reason = !state.auth.connected ? 'Sign in to see and add your reactions'
-      : !state.auth.socialWrite ? 'Civitai did not grant reaction access' : '';
+      : !state.auth.socialWrite ? 'Civitai did not grant reaction access'
+      : !mine ? 'Checking your reactions…' : '';
     const buttons = REACTIONS.map(([name, icon, key]) => {
       const button = document.createElement('button');
       button.type = 'button';
@@ -405,37 +417,47 @@ export function mountMusicScout() {
       const selected = !!mine?.has(name);
       button.classList.toggle('selected', selected);
       button.setAttribute('aria-pressed', String(selected));
-      button.disabled = !!reason || state.reacting.has(`${item.id}:${name}`);
+      button.disabled = !!reason;
       button.title = reason || (selected ? `Remove your ${name}` : name);
-      const count = document.createElement('b');
-      count.textContent = formatCount(stats[key]);
-      button.append(`${icon} `, count);
+      const number = document.createElement('b');
+      number.textContent = formatCount(count(name, key));
+      button.append(`${icon} `, number);
       button.addEventListener('click', () => toggleReaction(item, name, !selected));
       return button;
     });
     const total = document.createElement('span');
     total.className = 'total-reactions';
     total.title = mine ? 'Total reactions' : state.auth.connected ? 'Checking your reactions…' : 'Total reactions';
-    total.textContent = `Total ${formatCount(stats.reactionCount)}`;
+    total.textContent = `Total ${formatCount(REACTIONS.reduce((sum, [name, , key]) => sum + count(name, key), 0))}`;
     host.replaceChildren(...buttons, total, focusButton(item));
   }
 
-  async function toggleReaction(item, name, active) {
-    const key = `${item.id}:${name}`;
-    if (state.reacting.has(key)) return;
-    state.reacting.add(key);
+  // A click shows at once. Requests for one video go one after another, in click order,
+  // and each answer settles only its own reaction: an answer read while another click was
+  // still in flight would otherwise undo that click.
+  function toggleReaction(item, name, active) {
+    const id = String(item.id);
+    const mine = state.reacted.get(id);
+    if (!mine) return;
+    if (active) mine.add(name); else mine.delete(name);
     renderReactions();
-    try {
-      const result = await api('/api/reaction', { method: 'POST',
-        body: JSON.stringify({ imageId: item.id, reaction: name, active }) });
-      item.stats = { ...(item.stats || {}), ...(result.stats || {}) };
-      state.reacted.set(String(item.id), new Set(result.reactions || []));
-    } catch (error) {
-      message(error.message);
-    } finally {
-      state.reacting.delete(key);
-      renderReactions();
-    }
+    const previous = state.reactionQueue.get(id) || Promise.resolve();
+    const next = previous.then(() => api('/api/reaction', { method: 'POST',
+      body: JSON.stringify({ imageId: item.id, reaction: name, active }) }))
+      .then(result => {
+        const settled = state.reacted.get(id);
+        if ((result.reactions || []).includes(name)) settled.add(name); else settled.delete(name);
+      })
+      .catch(error => {
+        const settled = state.reacted.get(id);
+        if (active) settled.delete(name); else settled.add(name);
+        message(error.message);
+      })
+      .finally(() => {
+        if (state.reactionQueue.get(id) === next) state.reactionQueue.delete(id);
+        renderReactions();
+      });
+    state.reactionQueue.set(id, next);
   }
 
   async function fetchMore() {
