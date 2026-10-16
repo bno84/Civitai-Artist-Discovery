@@ -234,7 +234,8 @@ def _post(name: str, values: dict) -> dict:
 
 
 def _userinfo(token: str) -> dict:
-    request = urllib.request.Request(f"{AUTH_BASE}/userinfo", headers={**HEADERS, "Authorization": f"Bearer {token}"})
+    request = urllib.request.Request(f"{AUTH_BASE}/userinfo", headers=HEADERS)
+    request.add_unredirected_header("Authorization", f"Bearer {token}")
     with urllib.request.urlopen(request, timeout=30) as response: return json.loads(response.read())
 
 
@@ -295,14 +296,16 @@ def login(timeout: int = 300) -> dict:
 _REFRESH_LOCK = threading.Lock()
 
 
-def _refreshed_tokens(active: str) -> dict:
+def _refreshed_tokens(active: str, rejected_token: str | None = None) -> dict:
     with _REFRESH_LOCK:
         # Re-read inside the lock: whoever held it before this thread may already have
         # saved a fresh token, and redeeming the old one again would fail.
         tokens = _load()
         if tokens.get("client_id") != active:
             raise RuntimeError("Stored authorization belongs to a different Civitai application")
-        if int(tokens.get("expires_at", 0)) > int(time.time()) + 120:
+        if rejected_token is not None and tokens.get("access_token") != rejected_token:
+            return tokens
+        if rejected_token is None and int(tokens.get("expires_at", 0)) > int(time.time()) + 120:
             return tokens
         tokens = {**_post("token", {"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"], "client_id": active}), "identity": tokens.get("identity", {}), "client_id": active}
         tokens["expires_at"] = int(time.time()) + int(tokens.get("expires_in", 3600)); _save(tokens)
@@ -317,6 +320,14 @@ def get_access_token() -> str:
     if int(tokens.get("expires_at", 0)) <= int(time.time()) + 120:
         tokens = _refreshed_tokens(active)
     return tokens["access_token"]
+
+
+def refresh_access_token(rejected_token: str) -> str:
+    """Replace a server-rejected token, sharing one rotation across concurrent reads."""
+    active = client_id()
+    if not active:
+        raise RuntimeError("Civitai is not connected")
+    return _refreshed_tokens(active, rejected_token)["access_token"]
 
 
 def status() -> dict:

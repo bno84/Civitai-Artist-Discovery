@@ -41,6 +41,10 @@ scripts/*
 !tests/
 tests/*
 !tests/*.py
+!tests/fixtures/
+tests/fixtures/*
+!tests/fixtures/video_lifecycle.mjs
+!tests/fixtures/recovery.mp4
 
 # Current behavioral documentation and the active release notes only. Historical audits
 # and superseded release plans remain local.
@@ -56,6 +60,7 @@ docs/*
 !docs/2.0-checkpoint.md
 !docs/2.0-testing.md
 !docs/video-cards.md
+!docs/artwork-availability.txt
 # Internal ToS working notes. Never whitelist this: it is a candid self-assessment,
 # including open questions, and is not written to be read as a public claim.
 docs/tos-compliance.md
