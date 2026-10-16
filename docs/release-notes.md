@@ -1,5 +1,7 @@
 # Civitai Artist Discovery 2.2.1
 
+Released October 16, 2026.
+
 Maintenance update to the 2.x artist discovery app.
 
 ## Smoother artwork browsing
@@ -32,6 +34,8 @@ Maintenance update to the 2.x artist discovery app.
 Windows packages remain unsigned. LAN sharing is optional and unauthenticated: anyone
 who can reach it can use the connected account's controls. Keep it off on untrusted
 networks and do not expose its port to the internet.
+
+Large-scale browsing performance and automated release builds remain future work.
 
 ## Updating
 

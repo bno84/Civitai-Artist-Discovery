@@ -14,7 +14,7 @@ sponsored by Civitai.
 
 ## Project status
 
-The 2.x line is the current stable series. This checkout prepares maintenance version
+The 2.x line is the current stable series. This checkout contains maintenance version
 **2.2.1**. It includes the shared image-first interface,
 calendar navigation, streamlined filters and settings, richer artist cards, Time Machine,
 and the redesigned taste profile. Windows is the primary and only routinely tested
@@ -104,7 +104,8 @@ Windows-only.
 ## Requirements
 
 - Windows 10 or 11 is the currently tested environment.
-- Python 3.10 or newer to run from source. Development currently uses Python 3.14.
+- Python 3.10 or newer to run from source. The Windows package uses Python 3.14.8
+  and OpenSSL 3.5.9; use a supported, patched Python runtime for source installations.
 - A modern web browser.
 - A Civitai account for the personalized gallery, profile analysis, follows, and
   reactions.
@@ -134,9 +135,10 @@ py -m pip install -r requirements-dev.txt
 py -m playwright install chromium
 ```
 
-Playwright and Chromium are required only for the browser test suite. PyInstaller and
-Pillow are required only for packaging. On Windows, the runtime requirements file does
-not install any package. On Linux, it installs `keyring` and its Secret Service support.
+Playwright and Chromium are required only for the browser test suite. PyInstaller is
+required only for packaging. On Windows, the runtime requirements install Pillow and
+pystray for the notification-area icon. On Linux, they install `keyring` and its
+Secret Service support.
 
 No configuration file is required. On first launch the app creates `data/` beside the
 executable or source checkout and asks you to connect to Civitai. Extract packaged builds
