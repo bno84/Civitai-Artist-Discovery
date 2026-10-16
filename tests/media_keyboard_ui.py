@@ -32,7 +32,8 @@ with tempfile.TemporaryDirectory(
             baseModel="Foo",
             browsingLevel=1,
             createdAt=day + "T13:00:00Z",
-            url=pixel,
+            url=(f'https://image.civitai.com/keyboard-fixture/{i}/original=true/{i}.mp4'
+                 if kind == 'video' else pixel),
             width=8,
             height=8,
             stats={"reactionCount": score},
@@ -75,6 +76,17 @@ with tempfile.TemporaryDirectory(
             )
             page.add_init_script("""HTMLMediaElement.prototype.play=function(){return Promise.resolve()};
                 HTMLMediaElement.prototype.pause=function(){};""")
+            # Valid media avoids a native decode error racing the two Space presses.
+            # Playback policy itself is exercised with real players in the video suite.
+            def media_fixture(route):
+                if route.request.resource_type == 'media':
+                    route.fulfill(content_type='video/mp4',
+                        headers={'Accept-Ranges': 'bytes'},
+                        body=(ROOT / 'tests/fixtures/recovery.mp4').read_bytes())
+                else:
+                    route.fulfill(content_type='image/svg+xml', body=
+                        '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>')
+            page.route('https://image.civitai.com/keyboard-fixture/**', media_fixture)
             page.route(
                 "**/api/auth-status",
                 lambda route: route.fulfill(

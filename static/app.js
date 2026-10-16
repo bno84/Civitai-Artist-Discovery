@@ -75,6 +75,7 @@ function showContentRating() {
   $("contentMenu").querySelectorAll("[data-level]").forEach(button => {
     const selected = visibleBrowsingLevels.has(Number(button.dataset.level));
     button.classList.toggle("selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
     button.textContent = `${selected ? "✓ " : ""}${browsingLevelLabels.get(Number(button.dataset.level))}`;
   });
   const mature = [...visibleBrowsingLevels].some(level => level >= 4);
@@ -158,7 +159,6 @@ async function saveGalleryPreferences(patch, reload = true) {
 async function chooseContentRating(nextLevels) {
   const previous = contentRating, buttons = [...$("contentMenu").querySelectorAll("[data-level]")];
   $("contentFilter").disabled = true; buttons.forEach(button => button.disabled = true);
-  $("contentMenu").classList.add("hidden"); $("contentFilter").setAttribute("aria-expanded", "false");
   try {
     const result = await api("/api/settings", { method: "POST", body: JSON.stringify({ browsingLevels: nextLevels }) });
     contentRating = result.contentRating; visibleBrowsingLevels = new Set(result.browsingLevels); showContentRating();
@@ -1252,13 +1252,14 @@ $("emergingModeChoices").querySelectorAll("[data-mode]").forEach(button => {
 $("prefEmergingLimit").onchange = () => saveGalleryPreferences({
   emergingReactionLimit: Number($("prefEmergingLimit").value)
 }).then(saved => { if (saved) toast("Strict discovery limit updated."); });
+function toggleBrowsingLevel(level) {
+  const next = new Set(visibleBrowsingLevels);
+  next.has(level) ? next.delete(level) : next.add(level);
+  if (!next.size) return toast("Select at least one browsing level.");
+  return chooseContentRating([...next]);
+}
 $("contentMenu").querySelectorAll("[data-level]").forEach(button => {
-  button.onclick = () => {
-    const level = Number(button.dataset.level), next = new Set(visibleBrowsingLevels);
-    next.has(level) ? next.delete(level) : next.add(level);
-    if (!next.size) return toast("Select at least one browsing level.");
-    chooseContentRating([...next]);
-  };
+  button.onclick = () => toggleBrowsingLevel(Number(button.dataset.level));
 });
 document.addEventListener("click", event => {
   // Shared filters own outside dismissal and expanded state. A modal opened from a

@@ -1,9 +1,16 @@
 // Apply a shared keyboard contract to existing popovers without replacing page-specific
 // selection handlers. Panels keep their current checkbox/select semantics, not ARIA menus.
+const popoverOwners = new Map();
 export function anchorPopover(panel, getTrigger) {
+  popoverOwners.set(panel, getTrigger);
   let frame = 0;
   const position = () => {
     if (panel.classList.contains('hidden')) return;
+    for (const [other, owner] of popoverOwners) {
+      if (other === panel || other.classList.contains('hidden')) continue;
+      other.classList.add('hidden');
+      owner()?.setAttribute('aria-expanded', 'false');
+    }
     const trigger = getTrigger();
     if (!trigger) return;
     const bounds = trigger.getBoundingClientRect(), margin = 12, gap = 8;

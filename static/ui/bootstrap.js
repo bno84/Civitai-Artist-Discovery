@@ -46,6 +46,7 @@ controller.onload = () => {
     removeModel: name => window.removeGalleryModel(name).catch(error => window.toast(error.message)),
     reset: () => window.resetGalleryFilters(),
     setMedia: value => window.setGalleryMedia(value),
+    toggleLevel: level => window.toggleBrowsingLevel(level),
   });
   window.updateGalleryFilters = filters.update;
   for (const [id, labelledBy, closeIds] of [

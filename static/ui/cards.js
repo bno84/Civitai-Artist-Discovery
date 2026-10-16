@@ -4,6 +4,27 @@ import { attachCardVideo } from './video.js';
 import { reportClientEvent } from './diagnostics.js';
 
 let activeActionMenu = null;
+let hoveredCard = null;
+const carouselNavigation = new WeakMap();
+const nativeArrowControl = 'input,textarea,select,video,[contenteditable]:not([contenteditable="false"]),[role="slider"],[role="spinbutton"],[role="combobox"],[role="listbox"],[role="menu"],[role="tablist"],[role="tree"],[role="grid"]';
+function availableCard(el) {
+  return el?.isConnected && !el.closest('.hidden,[hidden],[inert]') &&
+    el.getClientRects().length > 0 && getComputedStyle(el).visibility === 'visible';
+}
+document.addEventListener('keydown', event => {
+  if (!['ArrowLeft', 'ArrowRight'].includes(event.key) || event.defaultPrevented ||
+      event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || document.hidden) return;
+  if (document.querySelector('dialog[open],.filter-panel:not(.hidden),.content-panel:not(.hidden),.calendar-panel:not(.hidden),#preferencesMenu:not(.hidden),.card-action-menu:not(.hidden)')) return;
+  const focus = document.activeElement;
+  if (focus?.isContentEditable || focus?.closest(nativeArrowControl)) return;
+  const focusedCard = focus?.closest('.creator-card');
+  const cardFocus = focusedCard && (focus === focusedCard || focus.closest('.image-button,.carousel-arrow,.image-progress'));
+  if (!availableCard(hoveredCard)) hoveredCard = null;
+  const target = cardFocus && availableCard(focusedCard) ? focusedCard : hoveredCard;
+  if (target && carouselNavigation.get(target)?.(event.key === 'ArrowLeft' ? -1 : 1)) event.preventDefault();
+});
+window.addEventListener('blur', () => { hoveredCard = null; });
+document.addEventListener('visibilitychange', () => { if (document.hidden) hoveredCard = null; });
 document.addEventListener('click', event => {
   if (activeActionMenu && !activeActionMenu.parentElement?.contains(event.target)) {
     activeActionMenu.classList.add('hidden');
@@ -22,16 +43,19 @@ export function createCreatorCard(a, context) {
   if (current.tagState?.known) imageTagState.set(String(current.id), current.tagState);
   let navigating = false;
   const el = document.createElement("article"); el.className = a.seen ? "creator-card is-seen" : "creator-card"; el.dataset.id = current.id;
+  el.addEventListener('pointerenter', () => { hoveredCard = el; });
+  el.addEventListener('pointerleave', () => { if (hoveredCard === el) hoveredCard = null; });
+  carouselNavigation.set(el, delta => {
+    if (navigating || a.imageCount < 2) return false;
+    move(delta); return true;
+  });
   el.tabIndex = 0;
   el.setAttribute('role', 'group');
   el.setAttribute('aria-label', `Artwork by ${a.username}`);
   el.addEventListener('keydown', event => {
     if (event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey ||
         event.target.isContentEditable || event.target.closest('input,textarea,select,video')) return;
-    if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && a.imageCount > 1) {
-      event.preventDefault();
-      move(event.key === 'ArrowLeft' ? -1 : 1);
-    } else if (event.code === 'Space' &&
+    if (event.code === 'Space' &&
                (event.target === el || event.target.closest('.image-button'))) {
       const toggle = el.querySelector('.video-toggle');
       if (toggle && !toggle.hidden && !navigating) { event.preventDefault(); toggle.click(); }

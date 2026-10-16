@@ -58,51 +58,91 @@ export function mountFilters(actions) {
     childList: true, subtree: true,
   });
   document.body.append(panel);
-  let opener = button;
-  const position = anchorPopover(panel, () => opener);
+  const compact = document.createElement('section');
+  compact.id = 'contentPanel';
+  compact.className = 'content-panel hidden';
+  compact.setAttribute('aria-label', 'Content ratings');
+  compact.innerHTML = '<div class="filter-head"><strong>Content ratings</strong><button type="button" class="quiet-button" aria-label="Close content ratings">\u00d7</button></div><div class="rating-pills" role="group" aria-label="Browsing levels"></div>';
+  const choices = [...document.querySelectorAll('#contentMenu [data-level]')].map(original => {
+    const choice = document.createElement('button');
+    choice.type = 'button'; choice.dataset.level = original.dataset.level;
+    const label = original.textContent.replace(/^\u2713\s*/, '');
+    choice.setAttribute('aria-label', label);
+    choice.onclick = () => actions.toggleLevel(Number(choice.dataset.level));
+    compact.querySelector('.rating-pills').append(choice);
+    return { choice, label };
+  });
+  document.body.append(compact);
+  content.setAttribute('aria-controls', compact.id);
+  const position = anchorPopover(panel, () => button);
+  const positionContent = anchorPopover(compact, () => content);
+  const closeContent = (restoreFocus = false) => {
+    compact.classList.add('hidden'); content.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) content.focus();
+  };
   const close = (restoreFocus = false) => {
     panel.classList.add('hidden');
     button.setAttribute('aria-expanded', 'false');
-    content.setAttribute('aria-expanded', 'false');
-    if (restoreFocus) opener.focus();
+    if (restoreFocus) button.focus();
   };
-  const open = async (trigger = button) => {
-    opener = trigger;
+  const open = async () => {
+    closeContent();
     panel.classList.remove('hidden');
     position();
     button.setAttribute('aria-expanded', 'true');
-    content.setAttribute('aria-expanded', 'true');
     search.disabled = true;
     await actions.refreshModels();
     search.disabled = false;
     applyModelSearch();
   };
+  const openContent = () => {
+    close(); compact.classList.remove('hidden');
+    positionContent(); content.setAttribute('aria-expanded', 'true');
+  };
   button.onclick = () => panel.classList.contains('hidden') ? open() : close();
-  content.onclick = () => open(content);
-  content.setAttribute('aria-controls', 'filterPanel');
+  content.onclick = () => compact.classList.contains('hidden') ? openContent() : closeContent();
   for (const trigger of [button, content]) trigger.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && !panel.classList.contains('hidden')) {
+    const surface = trigger === content ? compact : panel;
+    const dismiss = trigger === content ? closeContent : close;
+    if (event.key === 'Escape' && !surface.classList.contains('hidden')) {
       event.preventDefault();
-      close(true);
+      dismiss(true);
       return;
     }
     if (event.key !== 'ArrowDown') return;
     event.preventDefault();
-    open(trigger);
-    panel.querySelector('.rating-pills button:not(:disabled)')?.focus();
+    if (trigger === content) openContent(); else open();
+    surface.querySelector('.rating-pills button:not(:disabled)')?.focus();
   });
   panel.querySelector('.quiet-button').onclick = () => close(true);
   panel.addEventListener('keydown', event => {
     if (event.key === 'Escape') { event.preventDefault(); close(true); }
   });
+  compact.querySelector('.quiet-button').onclick = () => closeContent(true);
+  compact.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); closeContent(true); }
+  });
   document.addEventListener('click', event => {
-    if (!panel.contains(event.target) && !chips.contains(event.target) && !button.contains(event.target)) close();
+    if (!panel.contains(event.target) && !button.contains(event.target)) close();
+    if (!compact.contains(event.target) && !content.contains(event.target)) closeContent();
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || event.defaultPrevented || event.target.closest('dialog[open]')) return;
+    if (!compact.classList.contains('hidden')) { event.preventDefault(); closeContent(true); }
+    else if (!panel.classList.contains('hidden')) { event.preventDefault(); close(true); }
   });
   panel.querySelector('.filter-reset').onclick = () => actions.reset();
 
   const paint = () => {
     applyModelSearch();
     const { models, levels, media = 'all' } = actions.state();
+    for (const { choice, label } of choices) {
+      const selected = levels.includes(Number(choice.dataset.level));
+      choice.classList.toggle('selected', selected);
+      choice.setAttribute('aria-pressed', String(selected));
+      choice.textContent = `${selected ? '\u2713 ' : ''}${label}`;
+      choice.disabled = content.disabled;
+    }
     mediaSelect.value = media;
     const ratingChanged = levels.length !== 2 || !levels.includes(1) || !levels.includes(2);
     const count = models.length + Number(ratingChanged) + Number(media !== 'all');
