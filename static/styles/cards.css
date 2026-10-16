@@ -4,6 +4,8 @@
   height: clamp(calc(360px * var(--card-scale)), calc(58vh * var(--card-scale)), calc(640px * var(--card-scale)));
 }
 .creator-card .image-button img { object-fit: cover; }
+.artwork-retry { position: absolute; z-index: 7; top: 40%; left: 15%; right: 15%; padding: 12px; }
+.image-button img.image-error, #detailImage.image-error { visibility: hidden; }
 .creator-card[aria-busy="true"] .image-button img { filter: brightness(.7); transition: filter .12s ease; }
 .creator-card .creator-strip {
   position: absolute; z-index: 5; bottom: 10px; inset-inline: 0;

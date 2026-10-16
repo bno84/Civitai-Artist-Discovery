@@ -26,6 +26,7 @@ import traceback
 
 from discovery.civitai import API_LANE, CandidateCache
 from discovery.capture import AutoCapture
+from discovery.availability import ArtworkAvailability
 from discovery.timemachine import TimeMachine
 from discovery.history import HistoryArchive, RetryBudgetExhausted, parse_day, previous_local_day
 from discovery.selection import GallerySelection, media_type
@@ -65,6 +66,7 @@ CAPTURE = AutoCapture(HISTORY, SETTINGS)
 # than racing it for the same API budget.
 TIME_MACHINE = TimeMachine(DATA_ROOT / "discovery", HISTORY, TASTE)
 WRITE_LOCK = threading.Lock()
+ARTWORK_AVAILABILITY = ArtworkAvailability()
 HISTORY.on_block_complete = lambda key, merged: prepare_finished_block(key, merged)
 
 
@@ -1237,7 +1239,8 @@ class Handler(BaseHTTPRequestHandler):
                 history = TIME_MACHINE.creator_history(
                     query.get("username", [""])[0],
                     after=int(after) if after not in (None, "") else None,
-                    limit=int(query.get("limit", ["40"])[0]))
+                    limit=int(query.get("limit", ["40"])[0]),
+                    refill=query.get("savedOnly", [""])[0] != "1")
                 signals = gallery_signals()
                 profiles, follows = creator_profiles(), signals["followed"]
                 # Each image rides in a one-image card entry so the gallery's own
@@ -1552,6 +1555,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         try:
             body = self.request_json()
+            if parsed.path == "/api/artwork/availability":
+                self.json_response(ARTWORK_AVAILABILITY.check(body.get("sources")))
+                return
             if parsed.path == "/api/diagnostics/browser":
                 log_browser_events(DATA_ROOT, body.get("events"))
                 self.json_response({"logged": True})

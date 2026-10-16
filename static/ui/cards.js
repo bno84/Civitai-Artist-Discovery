@@ -1,4 +1,4 @@
-import { showCardArtwork, showVideoPoster, wireArtworkFallback } from './artwork.js';
+import { showCardArtwork, showVideoPoster, isArtworkUnavailable } from './artwork.js';
 import { toggleCreatorFollow } from './creator-actions.js';
 import { attachCardVideo } from './video.js';
 import { reportClientEvent } from './diagnostics.js';
@@ -103,8 +103,40 @@ export function createCreatorCard(a, context) {
     const date = new Date(`${value}T12:00:00`);
     return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
   }
-  function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) { if (current.type === 'video') showVideoPoster(main, current); else showCardArtwork(main, current.thumbnailUrl, current.url); } age.textContent = cardDate(); renderReactions(); showVideo(current); position.textContent = `${activePosition + 1} of ${a.imageCount} images${current.type === 'video' ? ' · video' : ''}`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => navigateTo(Number(button.dataset.index), 1)); }
-  async function ensureImages() { if (imagesLoaded) return; const data = await api(`/api/history/artist?date=${selectedDate}&segment=${selectedSegment}&username=${encodeURIComponent(a.username)}${context.models}`); const activeId = current.id; images = data.images; index = Math.max(0, images.findIndex(image => image.id === activeId)); imagesLoaded = true; a.imageCount = images.length; hydrateReactionStates(images).catch(error => console.warn("Reaction history could not be loaded", error)); }
+  function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) { if (current.type === 'video') showVideoPoster(main, current); else showCardArtwork(main, current.thumbnailUrl, current.url, current); } age.textContent = cardDate(); renderReactions(); showVideo(current); position.textContent = `${activePosition + 1} of ${a.imageCount} images${current.type === 'video' ? ' · video' : ''}`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => navigateTo(Number(button.dataset.index), 1)); }
+  let alternativesLoaded = false, unavailablePending = false;
+  async function ensureImages(forFailure = false) {
+    if (imagesLoaded && !(forFailure && el.loadArtworkAlternatives && !alternativesLoaded)) return;
+    const data = el.loadArtworkAlternatives
+      ? await el.loadArtworkAlternatives()
+      : await api(`/api/history/artist?date=${selectedDate}&segment=${selectedSegment}&username=${encodeURIComponent(a.username)}${context.models}`);
+    if (!el.isConnected) return;
+    const activeId = current.id;
+    images = forFailure ? data.images : data.images.filter(image => !isArtworkUnavailable(image));
+    index = Math.max(0, images.findIndex(image => image.id === activeId));
+    imagesLoaded = true; alternativesLoaded = true; a.imageCount = images.length;
+    hydrateReactionStates(images).catch(error => console.warn('Reaction history could not be loaded', error));
+  }
+  async function skipUnavailable() {
+    unavailablePending = true;
+    if (navigating || !el.isConnected) return;
+    unavailablePending = false;
+    setCardNavigationBusy(true, 'Skipping unavailable artwork...');
+    try {
+      await ensureImages(true);
+      if (!el.isConnected) return;
+      const next = images.slice(index).find(image => !isArtworkUnavailable(image));
+      images = images.filter(image => !isArtworkUnavailable(image));
+      a.imageCount = images.length;
+      if (!images.length) { removeCard('all-artwork-confirmed-unavailable'); return; }
+      index = next ? images.indexOf(next) : 0;
+      el.dataset.imagesActive = '1';
+      await selectAllowed(index, 1);
+    } catch (error) { toast(error.message); }
+    finally { if (el.isConnected) setCardNavigationBusy(false); }
+  }
+  main.addEventListener('artwork-unavailable', () => { skipUnavailable(); });
+  el.skipUnavailableArtwork = skipUnavailable;
   function removeCard(reason) {
     const detail = { reason, username: a.username, imageId: current.id,
       date: selectedDate, segment: selectedSegment,
@@ -113,22 +145,34 @@ export function createCreatorCard(a, context) {
     reportClientEvent('card_removed', detail);
     el.releaseVideo(); main.cancelArtwork?.(); cardImageObserver.unobserve(el); seenObserver.unobserve(el); pendingSeen.delete(el);
     el.remove();
-    loadMore().catch(error => toast(error.message));
+    if (el.onUnavailableCardRemoved) el.onUnavailableCardRemoved();
+    else if (!el.classList.contains('tm-card') && !reason.includes('unavailable')) loadMore().catch(error => toast(error.message));
+    // For media failures the existing sentinel supplies more artists when it enters
+    // view. Never start an eager replacement loop for a whole missing page.
   }
   async function selectAllowed(candidate, delta = 1) {
+    let skippedUnavailable = false;
     while (images.length) {
       candidate = (candidate + images.length) % images.length;
+      if (isArtworkUnavailable(images[candidate])) {
+        skippedUnavailable = true;
+        images.splice(candidate, 1); a.imageCount = images.length;
+        if (delta < 0) candidate--;
+        continue;
+      }
       const result = await checkImageTags(images[candidate].id);
+      if (!el.isConnected) return false;
       if (!tagsHideImage(result)) { index = candidate; paint(); if (navigating) await waitForArtwork(); return true; }
       if (navigating) setCardNavigationBusy(true, 'Skipping a filtered image…');
       images.splice(candidate, 1); a.imageCount = images.length;
       if (delta < 0) candidate--;
     }
-    removeCard('all-images-hidden-by-civitai-tags'); return false;
+    removeCard(skippedUnavailable ? 'no-usable-artwork-after-unavailable-skip' : 'all-images-hidden-by-civitai-tags'); return false;
   }
   async function prepareArtwork() {
     setCardNavigationBusy(true, 'Loading image…');
     try {
+      if (isArtworkUnavailable(current)) { unavailablePending = true; return; }
       const result = await checkImageTags(current.id);
       if (tagsHideImage(result)) {
         setCardNavigationBusy(true, 'Skipping a filtered image…');
@@ -169,7 +213,7 @@ export function createCreatorCard(a, context) {
     navStatus.classList.toggle('hidden', !value);
     el.querySelectorAll(".previous, .next, .image-progress button").forEach(button => { button.disabled = value; });
     renderReactions();
-    if (!value) el.resumeVideo();
+    if (!value) { el.resumeVideo(); if (unavailablePending) queueMicrotask(skipUnavailable); }
   }
   async function navigateTo(candidate, delta) {
     if (navigating) return;
@@ -225,7 +269,7 @@ export function createCreatorCard(a, context) {
   const more = el.querySelector('.more-menu');
   more.onclick = event => { event.stopPropagation(); const opening = actionMenu.classList.contains('hidden'); if (activeActionMenu && activeActionMenu !== actionMenu) activeActionMenu.classList.add('hidden'); if (opening) resetActionMenu(); actionMenu.classList.toggle('hidden', !opening); activeActionMenu = opening ? actionMenu : null; more.setAttribute('aria-expanded', String(opening)); if (opening) actionMenu.querySelector('button')?.focus(); };
   actionMenu.addEventListener('keydown', event => { if (event.key === 'Escape') { closeActionMenu(); more.focus(); } });
-  wireArtworkFallback(main); el.querySelector(".previous").onclick = () => move(-1); el.querySelector(".next").onclick = () => move(1); el.querySelector(".image-button").onclick = () => showDetails(current, a, el); el.querySelector(".info-button").onclick = () => showDetails(current, a, el);
+  el.querySelector(".previous").onclick = () => move(-1); el.querySelector(".next").onclick = () => move(1); el.querySelector(".image-button").onclick = () => showDetails(current, a, el); el.querySelector(".info-button").onclick = () => showDetails(current, a, el);
   applyCreatorFollowers(el, a);
   // Setting src while the card is still detached defeats loading="lazy" — the browser
   // fetches immediately — so a whole page of cards requested every preview at once and
