@@ -24,6 +24,7 @@ from .civitai import API_LANE, API_URL, USER_AGENT, AdaptivePacer as AdaptivePac
 from .recovery import SuspiciousCaptureError, volume_issue, volume_rows
 from .retry import retry_after_seconds
 from .models import matches_models, normalize_base_model
+from .thumbnails import ThumbnailHints
 from .search import (SEARCH_CLIENT_KEY, SEARCH_PAGE_SIZE, SEARCH_SLICE_RESULT_LIMIT,
                      SEARCH_URL, normalize_hit, search_body)
 from .site import (DEFAULT_CONTENT_RATING, RATING_RANK,
@@ -284,6 +285,7 @@ class HistoryArchive:
         # Feed floors move forward continuously; a short cache keeps the build screen
         # responsive without re-probing Civitai on every status poll.
         self._floor_cache: dict[int, tuple[float, datetime | None]] = {}
+        self.thumbnail_hints = ThumbnailHints()
         self.content_rating = content_rating(selected_content_rating)
         self.visible_levels = browsing_levels(selected_browsing_levels) \
             if selected_browsing_levels is not None else levels_for_rating(self.content_rating)
@@ -516,6 +518,17 @@ class HistoryArchive:
                 "detailImageUrl": video_still_url(row["url"], 1280) if video else preview_url(row["url"], 1280)})
             if video:
                 item["detailVideoUrl"] = video_playback_url(row["url"], 768)
+        return self.decorate_video_thumbnail(item)
+
+    def decorate_video_thumbnail(self, item):
+        if item.get("type") == "video":
+            hint = self.thumbnail_hints.get(item["id"], item["url"], self.visible_levels)
+            if hint:
+                generated = item["thumbnailUrl"]
+                item["thumbnailUrl"] = hint
+                item["thumbnailCandidates"] = list(dict.fromkeys([hint, generated]))
+                if "detailImageUrl" in item:
+                    item["detailImageUrl"] = hint
         return item
 
     def status(self, value: str, required_content_rating: str | None = None) -> dict:
@@ -957,7 +970,9 @@ class HistoryArchive:
                     if on_timing:
                         on_timing("response", response_seconds)
                     self.api_pacer.success(response_seconds)
-                    return json.loads(raw), len(raw)
+                    payload = json.loads(raw)
+                    self.thumbnail_hints.capture(payload, params.get("browsingLevel"))
+                    return payload, len(raw)
                 except urllib.error.HTTPError as error:
                     if on_timing:
                         on_timing("response", time.monotonic() - started)

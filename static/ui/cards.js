@@ -1,4 +1,4 @@
-import { showCardArtwork, wireArtworkFallback } from './artwork.js';
+import { showCardArtwork, showVideoPoster, wireArtworkFallback } from './artwork.js';
 import { toggleCreatorFollow } from './creator-actions.js';
 import { attachCardVideo } from './video.js';
 import { reportClientEvent } from './diagnostics.js';
@@ -79,7 +79,7 @@ export function createCreatorCard(a, context) {
     const date = new Date(`${value}T12:00:00`);
     return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
   }
-  function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) showCardArtwork(main, current.thumbnailUrl, current.type === 'video' ? '' : current.url); age.textContent = cardDate(); renderReactions(); showVideo(current); position.textContent = `${activePosition + 1} of ${a.imageCount} images${current.type === 'video' ? ' · video' : ''}`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => navigateTo(Number(button.dataset.index), 1)); }
+  function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) { if (current.type === 'video') showVideoPoster(main, current); else showCardArtwork(main, current.thumbnailUrl, current.url); } age.textContent = cardDate(); renderReactions(); showVideo(current); position.textContent = `${activePosition + 1} of ${a.imageCount} images${current.type === 'video' ? ' · video' : ''}`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => navigateTo(Number(button.dataset.index), 1)); }
   async function ensureImages() { if (imagesLoaded) return; const data = await api(`/api/history/artist?date=${selectedDate}&segment=${selectedSegment}&username=${encodeURIComponent(a.username)}${context.models}`); const activeId = current.id; images = data.images; index = Math.max(0, images.findIndex(image => image.id === activeId)); imagesLoaded = true; a.imageCount = images.length; hydrateReactionStates(images).catch(error => console.warn("Reaction history could not be loaded", error)); }
   function removeCard(reason) {
     const detail = { reason, username: a.username, imageId: current.id,
@@ -87,7 +87,7 @@ export function createCreatorCard(a, context) {
       surface: el.classList.contains('tm-card') ? 'time-machine' : 'gallery' };
     console.info('Gallery card removed', detail);
     reportClientEvent('card_removed', detail);
-    el.releaseVideo(); cardImageObserver.unobserve(el); seenObserver.unobserve(el); pendingSeen.delete(el);
+    el.releaseVideo(); main.cancelArtwork?.(); cardImageObserver.unobserve(el); seenObserver.unobserve(el); pendingSeen.delete(el);
     el.remove();
     loadMore().catch(error => toast(error.message));
   }

@@ -9,7 +9,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 LOG_LOCK = threading.Lock()
 LOG_BYTES = 5 * 1024 * 1024
-EVENTS = {'card_removed', 'image_load_failed', 'image_load_recovered'}
+EVENTS = {'card_removed', 'image_load_failed', 'image_load_recovered', 'video_retry', 'video_failed'}
 
 
 def append_log(root: Path, message: str) -> None:

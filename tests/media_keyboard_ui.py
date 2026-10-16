@@ -133,6 +133,10 @@ with tempfile.TemporaryDirectory(
             )
             for target in ["video", "[contenteditable]"]:
                 page.evaluate("""() => {
+                    if (!document.querySelector('video')) {
+                        const native=document.createElement('video');native.controls=true;
+                        document.querySelector('.creator-card').append(native);
+                    }
                     if (!document.querySelector('[contenteditable]')) {
                         const edit=document.createElement('div');edit.setAttribute('contenteditable','');
                         edit.textContent='Editable';document.querySelector('.creator-card').append(edit);
@@ -184,6 +188,19 @@ with tempfile.TemporaryDirectory(
                 return {calls,timeout,aborted};
             }""")
             assert result == {"calls": 2, "timeout": True, "aborted": True}, result
+            # Replacing Daily gallery must release its players without disposing Time Machine's retained cards.
+            cleanup = page.evaluate("""() => {
+                let dailyReleased=0, retainedReleased=0;
+                const daily=document.createElement('article');daily.className='creator-card';
+                daily.releaseVideo=()=>dailyReleased++;
+                document.querySelector('#gallery').append(daily);
+                const retained=document.createElement('article');retained.className='creator-card';
+                retained.releaseVideo=()=>retainedReleased++;
+                document.querySelector('#timeMachineGrid').append(retained);
+                clearGallery();
+                return {dailyReleased,retainedReleased,retained:retained.isConnected};
+            }""")
+            assert cleanup == {"dailyReleased": 1, "retainedReleased": 0, "retained": True}, cleanup
             browser.close()
     finally:
         process.terminate()

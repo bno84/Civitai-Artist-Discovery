@@ -1,7 +1,7 @@
 import { mountShell, groupPageControls } from './shell.js';
 import { enhancePopover } from './menu.js';
 import { api } from './api.js';
-import { showArtwork, wireArtworkFallback } from './artwork.js';
+import { showArtwork, showVideoPoster, wireArtworkFallback } from './artwork.js';
 import { showGallerySkeleton, showPageError } from './feedback.js';
 import { bindDialog } from './dialog.js';
 import { createCreatorCard } from './cards.js';
@@ -14,7 +14,7 @@ import { startPerformanceTrace } from './performance.js';
 import { mountCalendar } from './calendar.js';
 import { reportClientEvent } from './diagnostics.js';
 import { mountPreferences } from './preferences.js';
-import { showDetailVideo, clearDetailVideo, suspendCardVideos } from './video.js';
+import { showDetailVideo, clearDetailVideo, suspendCardVideos, refreshVideoEligibility, resetVideoRecoveryBudget } from './video.js';
 
 if (new URLSearchParams(location.search).get('uiPerf') === '1') {
   window.CivitaiPerformance = startPerformanceTrace();
@@ -23,7 +23,7 @@ if (new URLSearchParams(location.search).get('uiPerf') === '1') {
 mountShell();
 window.reportClientEvent = reportClientEvent;
 // Temporary bridge for the classic page controller; new modules import directly.
-window.CivitaiUI = Object.freeze({ api, showArtwork, wireArtworkFallback, showGallerySkeleton, showPageError, createCreatorCard, browsingState, modelParameters, readBrowsingState, toggleCreatorFollow, renderProfile, showDetailVideo, clearDetailVideo, suspendCardVideos });
+window.CivitaiUI = Object.freeze({ api, showArtwork, showVideoPoster, wireArtworkFallback, showGallerySkeleton, showPageError, createCreatorCard, browsingState, modelParameters, readBrowsingState, toggleCreatorFollow, renderProfile, showDetailVideo, clearDetailVideo, suspendCardVideos, refreshVideoEligibility, resetVideoRecoveryBudget });
 
 // Transitional classic controller preserves existing integration tests and global
 // callbacks while page behavior moves into modules one tested slice at a time.

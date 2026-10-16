@@ -608,11 +608,14 @@ function resumeSeenTracking() {
 }
 function clearGallery() {
   cancelPageLoad();
-  document.querySelectorAll(".creator-card").forEach(el => {
+  $("gallery").querySelectorAll(".creator-card").forEach(el => {
     seenObserver.unobserve(el);
     cardImageObserver.unobserve(el);
+    el.releaseVideo?.();
+    el.querySelector('.image-button img')?.cancelArtwork?.();
     el.seenEnteredAt = null;
   });
+  window.CivitaiUI.resetVideoRecoveryBudget();
   preferenceHidden = 0;
   // A different day's cards are a different page: the offset saved for this tab belongs
   // to the day being replaced, so returning to it must not jump into the new one.
@@ -1114,7 +1117,8 @@ function renderDetailTags(detail) {
       ? ' title="You hide this tag on Civitai"' : ""}>${escapeHtml(tag.name)}</span>`).join("")}`;
 }
 let detailRequestToken = 0;
-async function showDetails(image, artist, artistCard) { const token = ++detailRequestToken; const dialog = $("details"), artwork = $("detailImage"); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(true); artwork.removeAttribute("src"); artwork.dataset.previewUrl = ""; artwork.dataset.fallbackUrl = ""; artwork.dataset.fallbackPending = "0"; artwork.classList.remove("image-error"); artwork.classList.add("image-pending"); dialog.classList.add("detail-loading"); const finishArtworkLoad = () => { if (token === detailRequestToken) dialog.classList.remove("detail-loading"); }; artwork.addEventListener("load", finishArtworkLoad, { once: true }); artwork.addEventListener("error", finishArtworkLoad, { once: true }); showArtwork(artwork, image.thumbnailUrl, image.type === "video" ? "" : image.url); $("detailTags").innerHTML = ""; $("detailMeta").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; dialog.querySelector(".detail-copy .eyebrow").textContent = image.type === "video" ? "VIDEO DETAILS" : "IMAGE DETAILS"; $("fullLink").textContent = image.type === "video" ? "Full video" : "Full image"; $("detailPrompt").textContent = "Loading generation details…"; dialog.showModal(); try { const detail = await api(`/api/history/image?id=${image.id}`); if (token !== detailRequestToken || !dialog.open) return; showArtwork(artwork, detail.detailImageUrl || detail.thumbnailUrl, detail.type === "video" ? "" : detail.url); if (detail.detailVideoUrl) window.CivitaiUI.showDetailVideo(artwork, detail.detailVideoUrl); $("detailMeta").innerHTML = `<div><dt>${detail.type === "video" ? "Video" : "Image"}</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
+let detailRequestAbort = null;
+async function showDetails(image, artist, artistCard) { detailRequestAbort?.abort(); detailRequestAbort = new AbortController(); const detailSignal = detailRequestAbort.signal; const token = ++detailRequestToken; const dialog = $("details"), artwork = $("detailImage"); artwork.cancelArtwork?.(); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(true); artwork.removeAttribute("src"); artwork.dataset.previewUrl = ""; artwork.dataset.fallbackUrl = ""; artwork.dataset.fallbackPending = "0"; artwork.classList.remove("image-error"); artwork.classList.add("image-pending"); dialog.classList.add("detail-loading"); const finishArtworkLoad = () => { if (token === detailRequestToken) dialog.classList.remove("detail-loading"); }; artwork.addEventListener("load", finishArtworkLoad, { once: true }); artwork.addEventListener("error", finishArtworkLoad, { once: true }); if (image.type === "video") window.CivitaiUI.showVideoPoster(artwork, image); else showArtwork(artwork, image.thumbnailUrl, image.url); $("detailTags").innerHTML = ""; $("detailMeta").innerHTML = ""; $("detailCreator").textContent = `@${artist.username}`; dialog.querySelector(".detail-copy .eyebrow").textContent = image.type === "video" ? "VIDEO DETAILS" : "IMAGE DETAILS"; $("fullLink").textContent = image.type === "video" ? "Full video" : "Full image"; $("detailPrompt").textContent = "Loading generation details…"; dialog.showModal(); try { const detail = await api(`/api/history/image?id=${image.id}`, { signal: detailSignal }); if (token !== detailRequestToken || !dialog.open) return; if (detail.type === "video") { if (!detail.tags?.some(tag => tag.hidden)) { window.CivitaiUI.showVideoPoster(artwork, detail); if (detail.detailVideoUrl) window.CivitaiUI.showDetailVideo(artwork, detail.detailVideoUrl, detail.id); } } else showArtwork(artwork, detail.detailImageUrl || detail.thumbnailUrl, detail.url); $("detailMeta").innerHTML = `<div><dt>${detail.type === "video" ? "Video" : "Image"}</dt><dd>${safeCount(detail.id)}</dd></div><div><dt>Artist images</dt><dd>${safeCount(artist.imageCount)}</dd></div><div><dt>Model</dt><dd>${escapeHtml(detail.baseModel || "Unknown")}</dd></div><div><dt>Size</dt><dd>${escapeHtml(detail.width || "?")} × ${escapeHtml(detail.height || "?")}</dd></div><div><dt>Created</dt><dd>${escapeHtml(ago(detail.createdAt))}</dd></div><div><dt>Reactions</dt><dd>${safeCount(detail.stats?.reactionCount)}</dd></div>`; renderDetailTags(detail);
     $("detailPrompt").textContent = detail.prompt || "No prompt metadata available."; $("civitaiLink").href = detail.civitaiUrl; $("fullLink").href = detail.url;
     imageTagState.set(String(image.id), { known: detail.known, tags: detail.tags || [] });
     if (detail.tags?.some(tag => tag.hidden)) {
@@ -1123,10 +1127,10 @@ async function showDetails(image, artist, artistCard) { const token = ++detailRe
       toast("This image matches a tag you hide on Civitai. Removing it from the gallery…");
       artistCard?.removeHiddenImage?.(image.id).catch(error => toast(error.message));
     }
-  } catch (error) { if (token === detailRequestToken) { dialog.classList.remove("detail-loading"); $("detailPrompt").textContent = error.message; } } }
+  } catch (error) { if (token === detailRequestToken && dialog.open && error.name !== "AbortError") { dialog.classList.remove("detail-loading"); $("detailPrompt").textContent = error.message; } } }
 const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) loadMore().catch(error => toast(error.message)); }, { rootMargin: "800px" });
 new MutationObserver(() => { const sentinel = $("loadSentinel"); if (sentinel) observer.observe(sentinel); }).observe($("gallery"), { childList: true });
-$("details").addEventListener("close", () => { window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(false); }); $("close").onclick = () => { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); }; $("details").onclick = event => { if (event.target === $("details")) { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); } }; $("olderDay").onclick = () => loadDay(shiftDate(selectedDate, -1)).catch(showLoadError); $("newerDay").onclick = () => loadDay(shiftDate(selectedDate, 1)).catch(showLoadError); function showLoadError(error) {
+$("details").addEventListener("close", () => { detailRequestToken++; detailRequestAbort?.abort(); $("detailImage").cancelArtwork?.(); window.CivitaiUI.clearDetailVideo(); window.CivitaiUI.suspendCardVideos(false); }); $("close").onclick = () => { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); }; $("details").onclick = event => { if (event.target === $("details")) { detailRequestToken++; $("details").classList.remove("detail-loading"); $("details").close(); } }; $("olderDay").onclick = () => loadDay(shiftDate(selectedDate, -1)).catch(showLoadError); $("newerDay").onclick = () => loadDay(shiftDate(selectedDate, 1)).catch(showLoadError); function showLoadError(error) {
   const outage = error.kind === "service_unavailable";
   const historyWindow = error.kind === "history_window";
   // A rejected search service is not something retrying fixes, so it offers "Try again"
@@ -1770,6 +1774,7 @@ function showView(name) {
   $("timeMachine").classList.toggle("hidden", !timeMachine);
   $("loading").classList.toggle("hidden", !gallery || dayBuilt);
   $("gallery").classList.toggle("hidden", !gallery || !dayBuilt);
+  window.CivitaiUI.refreshVideoEligibility();
   // Before seen tracking resumes below, so the observer's first report describes where
   // the reader actually is rather than the position the previous tab was left at.
   if (previous !== name) window.scrollTo({ top: viewScroll[name] ?? 0, behavior: "auto" });
@@ -1868,7 +1873,7 @@ function syncTimeMachineCards(entries) {
         scheduleTimeMachineFlush();
         window.reportClientEvent?.('card_removed', { reason: 'image-hidden-by-civitai-tags',
           username: entry.username, imageId: entry.representative.id, surface: 'time-machine' });
-        element.remove();
+        element.releaseVideo?.(); element.querySelector('.image-button img')?.cancelArtwork?.(); element.remove();
         return;
       }
       return basePrepareArtwork();
@@ -1877,7 +1882,7 @@ function syncTimeMachineCards(entries) {
     element.dataset.order = position;
     element.dataset.signature = signature;
     decorateTimeMachineCard(element, entry);
-    if (current) { current.replaceWith(element); }
+    if (current) { current.releaseVideo?.(); current.querySelector('.image-button img')?.cancelArtwork?.(); current.replaceWith(element); }
     else {
       const after = [...grid.children].find(
         node => Number(node.dataset.order) > position);
@@ -1889,13 +1894,14 @@ function syncTimeMachineCards(entries) {
     if (!wanted.has(key)) {
       window.reportClientEvent?.('card_removed', { reason: 'not-in-latest-time-machine-results',
         username: key, imageId: node.dataset.id, surface: 'time-machine' });
-      timeMachineSeenObserver.unobserve(node); node.remove();
+      timeMachineSeenObserver.unobserve(node); node.releaseVideo?.(); node.querySelector('.image-button img')?.cancelArtwork?.(); node.remove();
     }
   });
 }
 function renderTimeMachineCards(cards) {
   const grid = $("timeMachineGrid");
   if (!cards.length) {
+    grid.querySelectorAll('.creator-card').forEach(node => { node.releaseVideo?.(); node.querySelector('.image-button img')?.cancelArtwork?.(); });
     grid.innerHTML = "";
     $("timeMachineMessage").textContent = $("timeMachineBar").style.width === "0%"
       ? "Read your follows to begin."
@@ -2103,7 +2109,7 @@ function timeMachineCreatorCard(entry, image) {
       tmCreatorSeenObserver.unobserve(element);
       window.reportClientEvent?.('card_removed', { reason: 'image-hidden-by-civitai-tags',
         username: entry.username, imageId: entry.representative.id, surface: 'time-machine-creator' });
-      element.remove();
+      element.releaseVideo?.(); element.querySelector('.image-button img')?.cancelArtwork?.(); element.remove();
       return;
     }
     return basePrepareArtwork();
@@ -2151,7 +2157,7 @@ function loadTimeMachineCreatorPage() {
 }
 function clearTimeMachineCreatorGrid() {
   const grid = $("timeMachineCreatorGrid");
-  [...grid.children].forEach(node => tmCreatorSeenObserver.unobserve(node));
+  [...grid.children].forEach(node => { tmCreatorSeenObserver.unobserve(node); node.releaseVideo?.(); node.querySelector('.image-button img')?.cancelArtwork?.(); });
   grid.replaceChildren();
 }
 async function openTimeMachineCreator(username) {
@@ -2170,6 +2176,7 @@ async function openTimeMachineCreator(username) {
   $("tmCreatorProgress").textContent = "";
   $("timeMachineGrid").classList.add("hidden");
   $("timeMachineCreatorGrid").classList.remove("hidden");
+  window.CivitaiUI.refreshVideoEligibility();
   $("tmCreatorBar").classList.remove("hidden");
   $("tmCreatorSentinel").classList.remove("hidden");
   window.scrollTo({ top: 0 });
@@ -2187,6 +2194,7 @@ async function closeTimeMachineCreator() {
   $("tmCreatorSentinel").classList.add("hidden");
   $("timeMachineCreatorGrid").classList.add("hidden");
   $("timeMachineGrid").classList.remove("hidden");
+  window.CivitaiUI.refreshVideoEligibility();
   [...$("timeMachineGrid").children].forEach(node => timeMachineSeenObserver.observe(node));
   window.scrollTo({ top: 0 });
   await refreshTimeMachine();

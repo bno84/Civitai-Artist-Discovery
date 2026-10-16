@@ -41,6 +41,10 @@ scripts/*
 !tests/
 tests/*
 !tests/*.py
+!tests/fixtures/
+tests/fixtures/*
+!tests/fixtures/video_lifecycle.mjs
+!tests/fixtures/recovery.mp4
 
 # Current behavioral documentation and the active release notes only. Historical audits
 # and superseded release plans remain local.
