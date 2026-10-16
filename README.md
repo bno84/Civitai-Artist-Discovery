@@ -14,12 +14,13 @@ sponsored by Civitai.
 
 ## Project status
 
-Version 2.0 is the current stable release. It introduces the shared image-first interface,
+The 2.x line is the current stable series. This checkout prepares maintenance version
+**2.2.1**. It includes the shared image-first interface,
 calendar navigation, streamlined filters and settings, richer artist cards, Time Machine,
 and the redesigned taste profile. Windows is the primary and only routinely tested
 platform.
 
-See the [2.0 release notes](docs/release-notes.md) for release highlights and upgrade
+See the [release notes](docs/release-notes.md) for release highlights and upgrade
 details.
 
 The underlying application is Python, SQLite, HTML, CSS, and JavaScript. Running from
@@ -165,11 +166,19 @@ python server.py
 ```
 
 The executable is a local Python/SQLite server; the browser tab is its interface rather
-than a standalone webpage. The server listens only on the local computer and opens the
+than a standalone webpage. The server listens only on the local computer by default and opens the
 application in your default browser. On Windows, its notification-area icon remains
 visible while it runs and provides **Open** and **Exit**. Use **Close app** in the page or
 **Exit** in that menu to stop it cleanly; closing the browser tab alone does not stop the
 Python process.
+
+Optional **LAN access** shares this same connected account with other devices. It has
+no password, pairing code, or separate user permissions and uses unencrypted HTTP.
+Anyone who can reach its address can browse the account's local data, change settings,
+and use granted Civitai actions. Enable it only on a private network whose devices and
+users you trust. Keep it off on shared or untrusted networks, and never forward its
+port to the internet. Host/Origin checks protect browser boundaries; they do not
+authenticate LAN clients.
 
 ## Civitai connection and configuration
 
@@ -226,7 +235,9 @@ Register `http://localhost:8765/oauth/callback` exactly as the redirect URI. A c
 can also be entered through the first-launch UI. Access and refresh tokens are protected
 with Windows DPAPI on Windows or stored in the desktop Secret Service keyring on Linux.
 The app deliberately refuses plaintext or unavailable Linux keyring backends. Tokens are
-never sent to browser JavaScript or written to application logs.
+never sent to browser JavaScript. Diagnostics redact common credential fields and
+authorization headers, but logs can still contain artwork IDs, creator names and local
+paths. Review them before sharing; do not publish the runtime `data/` folder.
 
 The authenticated integration reads reaction history, follows, creator profiles, tags,
 and the account's Content Controls. Follow and reaction writes occur only when the user
