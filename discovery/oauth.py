@@ -234,7 +234,8 @@ def _post(name: str, values: dict) -> dict:
 
 
 def _userinfo(token: str) -> dict:
-    request = urllib.request.Request(f"{AUTH_BASE}/userinfo", headers={**HEADERS, "Authorization": f"Bearer {token}"})
+    request = urllib.request.Request(f"{AUTH_BASE}/userinfo", headers=HEADERS)
+    request.add_unredirected_header("Authorization", f"Bearer {token}")
     with urllib.request.urlopen(request, timeout=30) as response: return json.loads(response.read())
 
 

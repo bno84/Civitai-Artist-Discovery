@@ -13,6 +13,7 @@ import urllib.request
 from .flatjson import unwrap_result
 from .oauth import get_access_token, refresh_access_token, status
 from .retry import retry_after_seconds
+from .diagnostics import redact_sensitive
 
 
 BASE_URL = "https://civitai.red"
@@ -68,7 +69,7 @@ class SocialClient:
             with urllib.request.urlopen(request, timeout=20) as response:
                 value = json.loads(response.read())
         except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", "replace")[:600]
+            detail = redact_sensitive(error.read(4096).decode("utf-8", "replace"))[:600]
             raise CivitaiHTTPError(
                 error.code, f"Civitai returned HTTP {error.code}: {detail}",
                 (error.headers or {}).get("Retry-After")) from error
@@ -78,7 +79,7 @@ class SocialClient:
 
     def _request(self, request: urllib.request.Request) -> object:
         token = get_access_token()
-        request.add_header("Authorization", f"Bearer {token}")
+        request.add_unredirected_header("Authorization", f"Bearer {token}")
         request.add_header("Accept", "application/json")
         request.add_header("User-Agent", "CivitaiArtistDiscovery/1.0 (local Windows artist discovery app; user-requested reads)")
         if self.lane is None:
@@ -113,7 +114,7 @@ class SocialClient:
                 return self._send(request)
             except CivitaiHTTPError as error:
                 if read and error.status == 401 and not refreshed and attempt + 1 < attempts:
-                    request.add_header('Authorization', f'Bearer {refresh_access_token(token)}')
+                    request.add_unredirected_header('Authorization', f'Bearer {refresh_access_token(token)}')
                     refreshed = True
                     continue
                 if not read or self.lane is not None or error.status not in (429, 500, 502, 503, 504) or attempt + 1 == attempts:
@@ -135,7 +136,7 @@ class SocialClient:
             with urllib.request.urlopen(request, timeout=20) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as error:
-            detail = error.read().decode("utf-8", "replace")[:600]
+            detail = redact_sensitive(error.read(4096).decode("utf-8", "replace"))[:600]
             raise CivitaiHTTPError(
                 error.code, f"Civitai returned HTTP {error.code}: {detail}",
                 (error.headers or {}).get("Retry-After")) from error

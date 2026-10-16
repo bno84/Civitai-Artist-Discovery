@@ -10,7 +10,6 @@ import math
 import os
 from pathlib import Path
 import random
-import re
 import sqlite3
 import threading
 import time
@@ -23,6 +22,7 @@ from typing import Callable
 from .civitai import API_LANE, API_URL, USER_AGENT, AdaptivePacer as AdaptivePacer, normalize, utcnow
 from .recovery import SuspiciousCaptureError, volume_issue, volume_rows
 from .retry import retry_after_seconds
+from .diagnostics import redact_sensitive
 from .models import matches_models, normalize_base_model
 from .thumbnails import ThumbnailHints
 from .search import (SEARCH_CLIENT_KEY, SEARCH_PAGE_SIZE, SEARCH_SLICE_RESULT_LIMIT,
@@ -902,9 +902,7 @@ class HistoryArchive:
                               for character in excerpt)
             # The public image endpoint should not return credentials, but redact common
             # secret-shaped fields before anything reaches disk as a defense in depth.
-            excerpt = re.sub(
-                r'(?i)(access[_-]?token|refresh[_-]?token|authorization|client_secret)'
-                r'(["\']?\s*[:=]\s*["\']?)[^"\'\s,}]+', r'\1\2[redacted]', excerpt)
+            excerpt = redact_sensitive(excerpt)
             excerpt = excerpt[:API_FAILURE_BODY_BYTES]
         context = {name: params.get(name) for name in
                    ("backend", "limit", "offset", "sort", "period", "browsingLevel", "withMeta")

@@ -107,7 +107,13 @@ class AppSettings:
                     "allowLanAccess": allow_lan_access,
                     "captureCoverage": capture_coverage}
 
-    def update(self, *, media_type_value: object = None, browsing_levels_value: object = None,
+    def update(self, **changes) -> dict:
+        # The entire read/modify/write must be one transaction. Locking just the
+        # final replace lets concurrent filter/settings requests lose each other.
+        with self.lock:
+            return self._update(**changes)
+
+    def _update(self, *, media_type_value: object = None, browsing_levels_value: object = None,
                content_rating_value: object = None,
                dim_seen_cards_value: object = None,
                check_for_updates_value: object = None,

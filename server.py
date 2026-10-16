@@ -1536,10 +1536,13 @@ class Handler(BaseHTTPRequestHandler):
     def request_json(self) -> dict:
         origin = self.headers.get("Origin")
         if origin:
-            parsed = urllib.parse.urlparse(origin)
-            if parsed.scheme != "http" or not is_own_address(parsed.hostname):
+            parsed = urllib.parse.urlsplit(origin)
+            expected = urllib.parse.urlsplit(f"http://{self.headers.get('Host') or ''}")
+            if (parsed.scheme != "http" or not is_own_address(parsed.hostname)
+                    or parsed.hostname != expected.hostname or parsed.port != expected.port
+                    or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment):
                 raise PermissionError("Request origin is not allowed")
-        if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
+        if (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower() != "application/json":
             raise ValueError("Content-Type must be application/json")
         length = int(self.headers.get("Content-Length") or 0)
         if length < 2 or length > 8192:
