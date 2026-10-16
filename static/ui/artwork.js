@@ -1,4 +1,5 @@
 // Gallery, Time Machine, and details share preview fallback and loading feedback.
+import { artworkContext, reportClientEvent } from './diagnostics.js';
 // Visibility checks belong to the caller: never assign artwork before they succeed.
 export function cardPreviewUrl(source, width, density = 1) {
   if (!source || !Number.isFinite(width) || width <= 0) return source;
@@ -26,17 +27,28 @@ export function wireArtworkFallback(image) {
   if (!image || image.dataset.fallbackWired) return;
   image.dataset.fallbackWired = '1';
   image.addEventListener('load', () => {
+    if (image.dataset.fallbackUsed === '1') {
+      reportClientEvent('image_load_recovered', { ...artworkContext(image),
+        reason: 'original-loaded-after-preview-failed', url: image.currentSrc || image.src });
+      image.dataset.fallbackUsed = '0';
+    }
     image.classList.remove('image-error', 'image-pending');
   });
   image.addEventListener('error', () => {
     const fallback = image.dataset.fallbackUrl;
     if (fallback && image.dataset.fallbackPending === '1') {
+      reportClientEvent('image_load_failed', { ...artworkContext(image),
+        reason: 'preview-failed-trying-original', url: image.currentSrc || image.src });
+      image.dataset.fallbackUsed = '1';
       image.dataset.fallbackPending = '0';
       image.src = fallback;
       return;
     }
     image.classList.remove('image-pending');
     image.classList.add('image-error');
+    reportClientEvent('image_load_failed', { ...artworkContext(image),
+      reason: image.dataset.fallbackUsed === '1' ? 'original-failed' : 'image-failed',
+      url: image.currentSrc || image.src });
   });
 }
 
@@ -47,6 +59,7 @@ export function showArtwork(image, previewUrl, originalUrl) {
   // Painting reactions or metadata must not restart the same artwork request/fallback.
   if (image.dataset.previewUrl === preview && image.getAttribute('src')) return;
   image.dataset.previewUrl = preview;
+  image.dataset.fallbackUsed = '0';
   image.classList.remove('image-error');
   image.classList.toggle('image-pending', !!preview);
   image.dataset.fallbackUrl = fallback;

@@ -1,5 +1,7 @@
 // Common filter surface. The page owns filter state and queries; this component owns
 // presentation, active chips, keyboard dismissal, and the reset/remove interactions.
+import { anchorPopover } from './menu.js';
+
 export function mountFilters(actions) {
   const toolbar = document.querySelector('.segment-toolbar');
   const content = document.getElementById('contentFilter');
@@ -23,6 +25,12 @@ export function mountFilters(actions) {
   panel.setAttribute('aria-label', 'Gallery filters');
   panel.innerHTML = '<div class="filter-head"><h2>Filters</h2><button type="button" class="quiet-button" aria-label="Close filters">×</button></div><div class="filter-sections"></div><button type="button" class="filter-reset">Reset filters</button>';
   panel.querySelector('.filter-sections').append(document.getElementById('contentMenu'), modelMenu);
+  const media = document.createElement('label');
+  media.className = 'preference-field';
+  media.innerHTML = '<span>Media type</span><select id="mediaType" aria-label="Media type"><option value="all">All</option><option value="image">Images only</option><option value="video">Videos only</option></select>';
+  panel.querySelector('.filter-sections').prepend(media);
+  const mediaSelect = media.querySelector('select');
+  mediaSelect.onchange = () => actions.setMedia(mediaSelect.value);
   // Keep the legacy label as a state notification point until page state is extracted.
   model.classList.add('hidden');
   panel.append(model);
@@ -51,6 +59,7 @@ export function mountFilters(actions) {
   });
   document.body.append(panel);
   let opener = button;
+  const position = anchorPopover(panel, () => opener);
   const close = (restoreFocus = false) => {
     panel.classList.add('hidden');
     button.setAttribute('aria-expanded', 'false');
@@ -59,8 +68,8 @@ export function mountFilters(actions) {
   };
   const open = async (trigger = button) => {
     opener = trigger;
-    panel.style.setProperty('--filter-top', `${Math.ceil(button.getBoundingClientRect().bottom + 8)}px`);
     panel.classList.remove('hidden');
+    position();
     button.setAttribute('aria-expanded', 'true');
     content.setAttribute('aria-expanded', 'true');
     search.disabled = true;
@@ -69,9 +78,6 @@ export function mountFilters(actions) {
     applyModelSearch();
   };
   button.onclick = () => panel.classList.contains('hidden') ? open() : close();
-  window.addEventListener('resize', () => {
-    if (!panel.classList.contains('hidden')) panel.style.setProperty('--filter-top', `${Math.ceil(button.getBoundingClientRect().bottom + 8)}px`);
-  });
   content.onclick = () => open(content);
   content.setAttribute('aria-controls', 'filterPanel');
   for (const trigger of [button, content]) trigger.addEventListener('keydown', event => {
@@ -96,13 +102,22 @@ export function mountFilters(actions) {
 
   const paint = () => {
     applyModelSearch();
-    const { models, levels } = actions.state();
+    const { models, levels, media = 'all' } = actions.state();
+    mediaSelect.value = media;
     const ratingChanged = levels.length !== 2 || !levels.includes(1) || !levels.includes(2);
-    const count = models.length + Number(ratingChanged);
+    const count = models.length + Number(ratingChanged) + Number(media !== 'all');
     button.textContent = count ? `Filters · ${count}` : 'Filters';
     button.dataset.activeCount = String(count);
     panel.querySelector('.filter-reset').disabled = !count || content.disabled;
     chips.querySelectorAll('.model-chip').forEach(chip => chip.remove());
+    if (media !== 'all') {
+      const chip = document.createElement('button');
+      chip.className = 'filter-button model-chip';
+      chip.textContent = `${media === 'image' ? 'Images only' : 'Videos only'} ×`;
+      chip.setAttribute('aria-label', 'Remove media filter');
+      chip.onclick = () => actions.setMedia('all');
+      chips.append(chip);
+    }
     for (const name of models) {
       const chip = document.createElement('button');
       chip.className = 'filter-button model-chip';
@@ -120,4 +135,5 @@ export function mountFilters(actions) {
     childList: true, subtree: true, attributes: true, attributeFilter: ['disabled'],
   });
   paint();
+  return { update: paint };
 }

@@ -1,6 +1,7 @@
 import { showCardArtwork, wireArtworkFallback } from './artwork.js';
 import { toggleCreatorFollow } from './creator-actions.js';
 import { attachCardVideo } from './video.js';
+import { reportClientEvent } from './diagnostics.js';
 
 let activeActionMenu = null;
 document.addEventListener('click', event => {
@@ -21,6 +22,21 @@ export function createCreatorCard(a, context) {
   if (current.tagState?.known) imageTagState.set(String(current.id), current.tagState);
   let navigating = false;
   const el = document.createElement("article"); el.className = a.seen ? "creator-card is-seen" : "creator-card"; el.dataset.id = current.id;
+  el.tabIndex = 0;
+  el.setAttribute('role', 'group');
+  el.setAttribute('aria-label', `Artwork by ${a.username}`);
+  el.addEventListener('keydown', event => {
+    if (event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey ||
+        event.target.isContentEditable || event.target.closest('input,textarea,select,video')) return;
+    if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && a.imageCount > 1) {
+      event.preventDefault();
+      move(event.key === 'ArrowLeft' ? -1 : 1);
+    } else if (event.code === 'Space' &&
+               (event.target === el || event.target.closest('.image-button'))) {
+      const toggle = el.querySelector('.video-toggle');
+      if (toggle && !toggle.hidden && !navigating) { event.preventDefault(); toggle.click(); }
+    }
+  });
   el.innerHTML = `<header class="creator-strip"><a class="creator-identity" href="${escapeHtml(a.profileUrl)}" target="_blank" rel="noopener">${avatar(a)}<span><span class="creator-name-line"><strong>${escapeHtml(a.username)}</strong>${a.matchedTags?.length ? `<span class="match-badge" title="Ranked here because you often react to: ${escapeHtml(a.matchedTags.join(", "))}" aria-label="Matches your taste: ${escapeHtml(a.matchedTags.join(", "))}">&#10038;</span>` : ""}${a.reactedOften ? `<span class="worth-badge" title="You have reacted to ${a.reactedCount} of this artist's images but do not follow them" aria-label="You often react to this artist but do not follow them">&#9829;</span>` : ""}<span class="creator-badge"></span></span><small><span class="image-age"></span><span class="creator-followers"></span></small></span></a><div class="creator-controls"><button class="follow-button ${a.following ? "is-following" : ""}" ${context.canWrite() ? "" : "disabled"} title="${context.canWrite() ? "" : "Civitai did not grant follow and reaction access."}">${a.following ? "✓ Following" : "+ Follow"}</button><button class="more-menu">⋮</button></div></header><div class="image-stage"><button class="image-button"><img loading="lazy" alt="Artwork by ${escapeHtml(a.username)}"></button><button class="carousel-arrow previous">‹</button><button class="carousel-arrow next">›</button><div class="card-nav-status" role="status" aria-live="polite"><span class="card-nav-spinner" aria-hidden="true"></span><span>Loading image…</span></div><div class="image-overlay"><div class="reaction-slot"></div><button class="info-button">ⓘ</button></div><div class="image-progress"></div></div><footer class="creator-footer"><span class="image-position"></span><a class="open-image" target="_blank" rel="noopener">Open on Civitai ↗</a></footer>`;
   [[".previous", "Previous image", "15 5 8 12 15 19"], [".next", "Next image", "9 5 16 12 9 19"]].forEach(([selector, label, points]) => {
     const button = el.querySelector(selector);
@@ -65,7 +81,12 @@ export function createCreatorCard(a, context) {
   }
   function paint() { current = images[index]; const activePosition = imagesLoaded ? index : Math.max(0, Number(a.representativeIndex) || 0); el.dataset.id = current.id; if (el.dataset.imagesActive) showCardArtwork(main, current.thumbnailUrl, current.type === 'video' ? '' : current.url); age.textContent = cardDate(); renderReactions(); showVideo(current); position.textContent = `${activePosition + 1} of ${a.imageCount} images${current.type === 'video' ? ' · video' : ''}`; open.href = current.civitaiUrl; const shown = imagesLoaded ? images : Array.from({ length: Math.min(a.imageCount, 40) }); const activeMarker = imagesLoaded || a.imageCount <= shown.length ? activePosition : Math.round(activePosition * (shown.length - 1) / (a.imageCount - 1)); progress.innerHTML = shown.map((_, i) => `<button class="${i === activeMarker ? "active" : ""}" data-index="${i}"></button>`).join(""); el.querySelector(".previous").hidden = a.imageCount < 2; el.querySelector(".next").hidden = a.imageCount < 2; if (imagesLoaded) progress.querySelectorAll("[data-index]").forEach(button => button.onclick = () => navigateTo(Number(button.dataset.index), 1)); }
   async function ensureImages() { if (imagesLoaded) return; const data = await api(`/api/history/artist?date=${selectedDate}&segment=${selectedSegment}&username=${encodeURIComponent(a.username)}${context.models}`); const activeId = current.id; images = data.images; index = Math.max(0, images.findIndex(image => image.id === activeId)); imagesLoaded = true; a.imageCount = images.length; hydrateReactionStates(images).catch(error => console.warn("Reaction history could not be loaded", error)); }
-  function removeCard() {
+  function removeCard(reason) {
+    const detail = { reason, username: a.username, imageId: current.id,
+      date: selectedDate, segment: selectedSegment,
+      surface: el.classList.contains('tm-card') ? 'time-machine' : 'gallery' };
+    console.info('Gallery card removed', detail);
+    reportClientEvent('card_removed', detail);
     el.releaseVideo(); cardImageObserver.unobserve(el); seenObserver.unobserve(el); pendingSeen.delete(el);
     el.remove();
     loadMore().catch(error => toast(error.message));
@@ -79,7 +100,7 @@ export function createCreatorCard(a, context) {
       images.splice(candidate, 1); a.imageCount = images.length;
       if (delta < 0) candidate--;
     }
-    removeCard(); return false;
+    removeCard('all-images-hidden-by-civitai-tags'); return false;
   }
   async function prepareArtwork() {
     setCardNavigationBusy(true, 'Loading image…');
@@ -173,7 +194,7 @@ export function createCreatorCard(a, context) {
         return;
       }
       if (!confirm(`Hide all content from ${a.username} on Civitai? You can undo this in Civitai Content Controls.`)) return;
-      try { await api('/api/content-controls/hide-artist', { method: 'POST', body: JSON.stringify({ username: a.username, userId: a.userId }) }); closeActionMenu(); removeCard(); toast(`${a.username} added to your Civitai Hidden Users.`); }
+      try { await api('/api/content-controls/hide-artist', { method: 'POST', body: JSON.stringify({ username: a.username, userId: a.userId }) }); closeActionMenu(); removeCard('artist-hidden-by-user'); toast(`${a.username} added to your Civitai Hidden Users.`); }
       catch (error) { toast(error.message); }
     };
   }
@@ -192,7 +213,7 @@ export function createCreatorCard(a, context) {
     if (!imagesLoaded) await ensureImages();
     images = images.filter(image => String(image.id) !== String(imageId));
     a.imageCount = images.length;
-    if (!images.length) { removeCard(); return; }
+    if (!images.length) { removeCard('image-hidden-by-civitai-tags'); return; }
     index = Math.min(index, images.length - 1);
     await selectAllowed(index, 1);
   };

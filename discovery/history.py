@@ -20,7 +20,10 @@ import urllib.parse
 import urllib.request
 from typing import Callable
 
-from .civitai import API_LANE, API_URL, USER_AGENT, AdaptivePacer, normalize, utcnow
+from .civitai import API_LANE, API_URL, USER_AGENT, AdaptivePacer as AdaptivePacer, normalize, utcnow
+from .recovery import SuspiciousCaptureError, volume_issue, volume_rows
+from .retry import retry_after_seconds
+from .models import matches_models, normalize_base_model
 from .search import (SEARCH_CLIENT_KEY, SEARCH_PAGE_SIZE, SEARCH_SLICE_RESULT_LIMIT,
                      SEARCH_URL, normalize_hit, search_body)
 from .site import (DEFAULT_CONTENT_RATING, RATING_RANK,
@@ -220,8 +223,7 @@ def _model_clause(models: list[str] | None) -> tuple[str, tuple]:
     names = [name for name in (models or []) if name]
     if not names:
         return "", ()
-    holes = ",".join("?" for _ in names)
-    return (f" AND COALESCE(NULLIF(i.base_model,''),'Unknown') IN ({holes})", tuple(names))
+    return (' AND base_model_matches(i.base_model,?)', (json.dumps(names),))
 
 
 BROWSING_LEVEL_SQL = """COALESCE(i.browsing_level, CASE COALESCE(i.nsfw_level,'None')
@@ -296,6 +298,7 @@ class HistoryArchive:
     def connect(self):
         connection = sqlite3.connect(self.db_path, timeout=30)
         connection.row_factory = sqlite3.Row
+        connection.create_function('base_model_matches', 2, matches_models, deterministic=True)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=30000")
         try:
@@ -357,6 +360,12 @@ class HistoryArchive:
                     complete INTEGER NOT NULL DEFAULT 0, scan_cursor TEXT,
                     older_cursor TEXT, top_cursor TEXT, pages INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT, PRIMARY KEY(block_key,browsing_mask)
+                );
+                CREATE TABLE IF NOT EXISTS capture_recovery (
+                    block_key TEXT PRIMARY KEY, reason TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    restart_required INTEGER NOT NULL DEFAULT 0,
+                    next_retry_at REAL NOT NULL
                 );
             """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(days)")}
@@ -497,7 +506,7 @@ class HistoryArchive:
             "url": row["url"], "thumbnailUrl": video_still_url(row["url"]) if video else preview_url(row["url"]),
             "civitaiUrl": image_url(row["id"]),
             "width": row["width"], "height": row["height"], "type": row["type"], "nsfwLevel": row["nsfw_level"],
-            "browsingLevel": row["browsing_level"], "baseModel": row["base_model"] or "Unknown",
+            "browsingLevel": row["browsing_level"], "baseModel": normalize_base_model(row["base_model"]),
             "modelVersionIds": json.loads(row["model_version_ids"]), "stats": json.loads(row["stats"]),
             "visualHash": row["visual_hash"]}
         if video:
@@ -656,6 +665,8 @@ class HistoryArchive:
         current = self.status(key, requested_rating)
         if current["complete"] or current["state"] == "loading":
             return current
+        if current.get("errorKind") == "suspicious_capture":
+            self.restart_capture(key)
         with self.connect() as db:
             existing = db.execute(
                 "SELECT complete,elapsed_seconds,collection_version FROM days WHERE day=?", (key,)).fetchone()
@@ -914,7 +925,8 @@ class HistoryArchive:
                  on_delay: Callable[[str, float, int, int], None] | None = None,
                  cancel_event: threading.Event | None = None,
                  on_timing: Callable[[str, float], None] | None = None,
-                 on_transfer: Callable[[int, int], None] | None = None) -> tuple[dict, int]:
+                 on_transfer: Callable[[int, int], None] | None = None,
+                 request_attempts: int | None = None, request_timeout: float = 60) -> tuple[dict, int]:
         """Fetch one page, retrying transient failures.
 
         ``on_delay`` receives the attempt number so callers can tell a single
@@ -934,7 +946,7 @@ class HistoryArchive:
                         on_timing("pace", paced)
                     self.api_lane.last_request = time.monotonic()
                     started = time.monotonic()
-                    with urllib.request.urlopen(request, timeout=60) as response:
+                    with urllib.request.urlopen(request, timeout=request_timeout) as response:
                         raw = response.read()
                         wire_size = len(raw)
                         if response.headers.get("Content-Encoding") == "gzip":
@@ -966,7 +978,8 @@ class HistoryArchive:
                         try: wait = max(60.0, float(retry)) if retry else min(600.0, 60.0 * (2**backoff_attempt))
                         except ValueError: wait = min(600.0, 60.0 * (2**backoff_attempt))
                     else: wait = min(60.0, 2.0**backoff_attempt)
-                    delay = wait + random.uniform(0, 2)
+                    requested_wait = retry_after_seconds(retry)
+                    delay = max(wait, requested_wait or 0) + random.uniform(0, 2)
                 except (TimeoutError, urllib.error.URLError) as error:
                     if on_timing:
                         on_timing("response", time.monotonic() - started)
@@ -976,7 +989,7 @@ class HistoryArchive:
                     self._record_api_failure(params, "network", reason=error)
                     wait = min(60, 2**(attempt % RATE_LIMIT_RETRIES))
                     delay = wait + random.uniform(0, 1)
-                attempts = (CHECKPOINTED_RETRY_ATTEMPTS
+                attempts = request_attempts or (CHECKPOINTED_RETRY_ATTEMPTS
                             if cancel_event and reason != "rate_limited"
                             else RATE_LIMIT_RETRIES)
                 attempt += 1
@@ -1057,7 +1070,8 @@ class HistoryArchive:
                             wait = min(300.0, 30.0 * 2**backoff_attempt)
                     else:
                         wait = min(60.0, 2.0**backoff_attempt)
-                    delay = wait + random.uniform(0, 2)
+                    requested_wait = retry_after_seconds(retry)
+                    delay = max(wait, requested_wait or 0) + random.uniform(0, 2)
                 except (TimeoutError, urllib.error.URLError) as error:
                     if on_timing:
                         on_timing("response", time.monotonic() - started)
@@ -1106,6 +1120,33 @@ class HistoryArchive:
                 self.jobs[key]["phase"] = "locating"
             return self._collect_v1(key, value, start, end, rebuilding)
         return self._collect_search(key, value, start, end, rebuilding)
+
+    def verify_capture_volume(self, key: str) -> None:
+        if "#" not in key:
+            return
+        with self.connect() as db:
+            rows = volume_rows(db)
+        target = next((row for row in rows if row["day"] == key), None)
+        reason = volume_issue(rows, target) if target else None
+        if reason:
+            # Persist the need for a fresh pass before raising. If the app exits
+            # now, all feed flags may be complete even though publication failed.
+            with self.connect() as db:
+                db.execute("""INSERT INTO capture_recovery
+                    (block_key,reason,restart_required,next_retry_at) VALUES(?,?,1,?)
+                    ON CONFLICT(block_key) DO UPDATE SET reason=excluded.reason,restart_required=1""",
+                    (key, reason, time.time() + 30 * 60))
+            raise SuspiciousCaptureError(reason)
+
+    def restart_capture(self, key: str) -> None:
+        """Recheck a suspect success without deleting any saved image metadata."""
+        with self.lock:
+            if self.jobs.get(key, {}).get("state") == "loading":
+                raise ValueError("This gallery is already loading")
+            with self.connect() as db:
+                db.execute("UPDATE days SET complete=0 WHERE day IN (?,?)", (key, key.split("#")[0]))
+                db.execute("""UPDATE block_feeds SET complete=0,scan_cursor=NULL,
+                    older_cursor=NULL,top_cursor=NULL WHERE block_key=?""", (key,))
 
     def _collect_search(self, key: str, value: str, start: datetime, end: datetime,
                         rebuilding: bool = False) -> None:
@@ -1304,6 +1345,7 @@ class HistoryArchive:
                                WHERE block_key=? AND browsing_mask=?""",
                         (utcnow(), key, mask))
 
+            self.verify_capture_volume(key)
             with self.connect() as db:
                 db.execute("""UPDATE days SET complete=1,scan_cursor=NULL,content_rating=?,
                            collection_version=?,elapsed_seconds=?,updated_at=? WHERE day=?""",
@@ -1341,11 +1383,13 @@ class HistoryArchive:
             except OSError:
                 pass
             outage = isinstance(error, RetryBudgetExhausted)
+            suspicious = isinstance(error, SuspiciousCaptureError)
             configuration = isinstance(error, SearchBackendUnavailable)
             incomplete = isinstance(error, SearchCompletenessError)
             last_failure = (f" Last response: {error.last_failure}." if outage and
                             error.last_failure else "")
-            message = (f"Civitai search is still unavailable after {error.attempts} attempts."
+            message = (str(error) if suspicious else
+                       f"Civitai search is still unavailable after {error.attempts} attempts."
                        f"{last_failure} Everything collected so far is saved; Continue building "
                        "will resume it. Details are in data/api-failures.jsonl." if outage else
                        "Civitai changed or rejected its browser search service, so the app cannot "
@@ -1358,7 +1402,7 @@ class HistoryArchive:
                        "was saved; Continue building will resume it.")
             with self.lock:
                 self.jobs[key].update({"state": "error", "error": message,
-                    "errorKind": "service_unavailable" if outage else
+                    "errorKind": "suspicious_capture" if suspicious else "service_unavailable" if outage else
                                  "search_configuration" if configuration else
                                  "search_incomplete" if incomplete else "collection_failed",
                     "delayReason": None, "retryUntilMonotonic": None})
@@ -1710,6 +1754,7 @@ class HistoryArchive:
                         raise HistoryWindowUnavailable(mask, start, oldest)
                     cursor = next_cursor
 
+            self.verify_capture_volume(key)
             with self.connect() as db:
                 db.execute("""UPDATE days SET complete=1,scan_cursor=NULL,content_rating=?,
                            collection_version=?,elapsed_seconds=?,updated_at=? WHERE day=?""",
@@ -1747,6 +1792,7 @@ class HistoryArchive:
             except OSError:
                 pass
             outage = isinstance(error, RetryBudgetExhausted)
+            suspicious = isinstance(error, SuspiciousCaptureError)
             window = isinstance(error, HistoryWindowUnavailable)
             last_failure = (f" Last response: {error.last_failure}." if outage and
                             error.last_failure else "")
@@ -1755,7 +1801,8 @@ class HistoryArchive:
                 reachable = oldest_buildable_day(error.oldest_seen)
                 window_hint = (". The oldest day Civitai can currently build at this "
                                f"coverage is {reachable:%B} {reachable.day}, {reachable.year}")
-            message = (f"Civitai is still unavailable after {error.attempts} attempts."
+            message = (str(error) if suspicious else
+                       f"Civitai is still unavailable after {error.attempts} attempts."
                        f"{last_failure} "
                        "Everything collected so far is saved; Continue building will "
                        "resume from the last successful page. Details are in "
@@ -1771,7 +1818,7 @@ class HistoryArchive:
                        "progress was saved; Continue building will resume it.")
             with self.lock:
                 self.jobs[key].update({"state": "error", "error": message,
-                    "errorKind": "service_unavailable" if outage else
+                    "errorKind": "suspicious_capture" if suspicious else "service_unavailable" if outage else
                                  "history_window" if window else "collection_failed",
                     "delayReason": None, "retryUntilMonotonic": None})
 
@@ -1848,6 +1895,56 @@ class HistoryArchive:
         self._invalidate_artist_cache(day)
         self.build_artist_index(day)
         return day
+
+    def repair_full_day_segment_memberships(self) -> list[dict]:
+        """Explicit, local-only repair for the former unattended 24-hour halves.
+
+        Call only after taking a verified backup with collection stopped. Preserve
+        every artwork and full-day membership; remove only incorrectly assigned
+        half-day relationships. Ordinary startup never invokes this maintenance.
+        """
+        repaired = []
+        with self.index_lock, self.connect() as db:
+            candidates = list(db.execute("""SELECT day,start_utc,end_utc FROM days
+                WHERE complete=1 AND (day LIKE '%#morning' OR day LIKE '%#evening')"""))
+            for row in candidates:
+                if not row["start_utc"] or not row["end_utc"]:
+                    continue
+                old_start, old_end = map(parse_timestamp, (row["start_utc"], row["end_utc"]))
+                if (old_end - old_start).total_seconds() <= 13 * 3600:
+                    continue
+                value, segment = row["day"].split("#", 1)
+                start, end = bounds(parse_day(value))
+                if old_start != start or old_end != end:
+                    raise ValueError("Refusing repair of an unrecognized segment time range")
+                midday = start + timedelta(hours=12)
+                if segment == "morning":
+                    end = midday
+                else:
+                    start = midday
+                # The original collector also saved each image under its full day.
+                # Refuse to hide an image that has no preserved full-day reference.
+                unsafe = db.execute("""SELECT 1 FROM block_images b JOIN images i ON i.id=b.image_id
+                    WHERE b.block_key=? AND (julianday(i.created_at) IS NULL OR NOT EXISTS
+                    (SELECT 1 FROM block_images preserved WHERE preserved.block_key=? AND preserved.image_id=b.image_id))
+                    LIMIT 1""", (row["day"], value)).fetchone()
+                if unsafe:
+                    raise ValueError("Refusing repair without valid timestamps and preserved full-day artwork")
+                removed = db.execute("""DELETE FROM block_images WHERE block_key=? AND image_id IN
+                    (SELECT i.id FROM block_images b JOIN images i ON i.id=b.image_id
+                     WHERE b.block_key=? AND (julianday(i.created_at)<julianday(?)
+                     OR julianday(i.created_at)>=julianday(?)))""",
+                    (row["day"], row["day"], start.isoformat(), end.isoformat())).rowcount
+                db.execute("UPDATE days SET start_utc=?,end_utc=?,artist_levels=NULL WHERE day=?",
+                           (start.isoformat(), end.isoformat(), row["day"]))
+                db.execute("DELETE FROM day_artist_cache WHERE day=?", (row["day"],))
+                db.execute("DELETE FROM day_artist_cache_state WHERE day=?", (row["day"],))
+                repaired.append({"block": row["day"], "removed_wrong_half_memberships": removed,
+                                 "start": start.isoformat(), "end": end.isoformat()})
+            # Drop in-memory indexes only after the transaction can commit.
+        for item in repaired:
+            self._active_index_levels.pop(item["block"], None)
+        return repaired
 
     def build_artist_index(self, value: str, levels: tuple[int, ...] | None = None) -> None:
         with self.index_lock, self.connect() as db:
@@ -2256,7 +2353,7 @@ class HistoryArchive:
             level = int(row["browsing_level"] or 0) or ALL_BROWSING_LEVELS
             payload, _ = self._request(
                 {"imageId": image_id, "withMeta": "true", "browsingLevel": level},
-                minimum_interval=1.5)
+                minimum_interval=1.5, request_attempts=3, request_timeout=20)
             raw = next((item for item in payload.get("items", []) if int(item.get("id", -1)) == image_id), None)
             if raw is None:
                 # The request succeeded and simply did not contain this image, so it is

@@ -74,6 +74,11 @@ Windows-only.
 - Restores the selected day, day segment, view, model filter, card size, loaded depth, and
   scroll position within the browser session.
 - Stops and resumes long collections from SQLite checkpoints.
+- Automatically retries unfinished captures after 30 minutes, backing off to six hours
+  during sustained outages. The recovery queue survives app restarts. Captures with
+  fewer than 20% of the records typical for comparable recent blocks are held for
+  verification; saved metadata is preserved. Settings shows outstanding recovery blocks,
+  including older gaps that the public feed can no longer reach.
 - Collects lightweight listing data first; full prompts and generation resources are read
   only when an image's detail view is opened.
 - Retains Civitai's listing-provided visual hash for newly collected images, allowing
@@ -250,7 +255,12 @@ It can include:
   mirrored Content Controls;
 - `oauth_tokens.dpapi`: Windows-only DPAPI-encrypted OAuth credentials;
 - `oauth_client.json` and `settings.json`: local configuration, including Gallery preferences;
-- creator/follow caches, the single-instance marker, and `error.log`;
+- creator/follow caches and the single-instance marker;
+- `error.log`: server exceptions, collection failures, and browser diagnostics for
+  removed cards, failed artwork previews/originals, and successful fallback loads.
+  Browser entries include image IDs and removal reasons; image URLs omit query
+  parameters and fragments. The log rotates at 5 MB to `error.log.1`;
+- `capture-log.jsonl`: automatic capture runs, outcomes, counts, and failure reasons;
 - `api-failures.jsonl`: a size-limited, rotating journal of failed Civitai API status
   codes, safe response headers, request context, and truncated response excerpts. Common
   credential-shaped fields are redacted before the entry is written.
@@ -321,20 +331,46 @@ before moving through a creator's carousel. Opening image details does not rebui
 reset the feed. See [docs/content-controls.md](docs/content-controls.md) for the detailed
 behavior and API tradeoff.
 
+## Media, models, and read recovery
+
+The Filters panel includes All, Images only, and Videos only. The media choice is saved
+with your preferences and participates in filter chips and Reset. Media and base-model
+filters select artwork before artist counts, covers, Popular totals, personal ranking,
+and pagination are calculated. Artists remain grouped, including mixed-media artists.
+Focus a card to use Left/Right for its carousel, or Space to play/pause its visible video.
+Inputs and native video controls keep their own keyboard behavior.
+
+Base-model labels are normalized on new collection and when reading existing records;
+the archive is not rewritten. A concatenated label is separated only when its entire
+value has one unambiguous decomposition into known complete base-model names. Unknown
+labels remain intact. The exact upstream origin of historical concatenated labels has
+not been established. Base-model filtering does not imply comprehensive resource or
+LoRA filtering: most archived videos lack that metadata. A future enrichment pass should
+use a queue of distinct model-version IDs with a fixed per-pass budget (for example,
+50 IDs or two minutes), the shared request pacer, cached successes, retryable failures,
+and explicit coverage reporting, rather than fetching details for every artwork. That
+enrichment strategy is a recommendation; it is not implemented by this change.
+
+Interactive Civitai reads have at most three server attempts for transient failures;
+background work keeps its existing retry budget. Numeric and HTTP-date Retry-After
+headers are respected. Mutations are never automatically replayed. Browser requests
+have a deadline and do not retry automatically. Failed tag batches stay unknown so later
+requests can retry, and reaction lookup failures produce an error rather than an empty
+success. Historical empty tag records cannot safely be distinguished from genuine empty
+results and are not bulk-deleted.
+
 ## Testing
 
 Tests are existing standalone Python scripts rather than a separate test framework. They
 use temporary data directories and synthetic records.
 
 ```powershell
-Get-ChildItem .\tests\*.py | ForEach-Object {
-  py $_.FullName
-  if ($LASTEXITCODE) { throw "Test failed: $($_.Name)" }
-}
+py -B scripts/run_tests.py
 ```
 
-Some tests start local servers and Chromium. If a run is interrupted, check for a leftover
-Python test process before running the suite again.
+Some tests start local servers and Chromium. The runner isolates data directories and
+remaps test server ports to avoid running apps. Per-test logs and results are written to
+`reports/full-suite/`. Use `--only test_name other_test_name` for a targeted run.
 
 ## Building the Windows package
 
