@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve Civitai Artist Discovery. The 1.x line prioritizes stable,
+Thanks for helping improve Civitai Artist Discovery. The 2.x line prioritizes stable,
 backward-compatible bug fixes, so small, focused changes are easiest to review and least
 likely to disrupt working behavior.
 
@@ -20,10 +20,7 @@ likely to disrupt working behavior.
 5. Run the existing script-based test suite:
 
    ```powershell
-   Get-ChildItem tests\*.py | ForEach-Object {
-     py $_.FullName
-     if ($LASTEXITCODE) { throw "Test failed: $($_.Name)" }
-   }
+   py -B scripts/run_tests.py
    ```
 
 Please describe what you tested and call out any behavior you could not verify. By
