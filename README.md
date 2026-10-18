@@ -14,12 +14,13 @@ sponsored by Civitai.
 
 ## Project status
 
-Version 2.0 is the current stable release. It introduces the shared image-first interface,
+The 2.x line is the current stable series. This checkout contains maintenance version
+**2.2.1**. It includes the shared image-first interface,
 calendar navigation, streamlined filters and settings, richer artist cards, Time Machine,
 and the redesigned taste profile. Windows is the primary and only routinely tested
 platform.
 
-See the [2.0 release notes](docs/release-notes.md) for release highlights and upgrade
+See the [release notes](docs/release-notes.md) for release highlights and upgrade
 details.
 
 The underlying application is Python, SQLite, HTML, CSS, and JavaScript. Running from
@@ -74,6 +75,11 @@ Windows-only.
 - Restores the selected day, day segment, view, model filter, card size, loaded depth, and
   scroll position within the browser session.
 - Stops and resumes long collections from SQLite checkpoints.
+- Automatically retries unfinished captures after 30 minutes, backing off to six hours
+  during sustained outages. The recovery queue survives app restarts. Captures with
+  fewer than 20% of the records typical for comparable recent blocks are held for
+  verification; saved metadata is preserved. Settings shows outstanding recovery blocks,
+  including older gaps that the public feed can no longer reach.
 - Collects lightweight listing data first; full prompts and generation resources are read
   only when an image's detail view is opened.
 - Retains Civitai's listing-provided visual hash for newly collected images, allowing
@@ -98,7 +104,8 @@ Windows-only.
 ## Requirements
 
 - Windows 10 or 11 is the currently tested environment.
-- Python 3.10 or newer to run from source. Development currently uses Python 3.14.
+- Python 3.10 or newer to run from source. The Windows package uses Python 3.14.8
+  and OpenSSL 3.5.9; use a supported, patched Python runtime for source installations.
 - A modern web browser.
 - A Civitai account for the personalized gallery, profile analysis, follows, and
   reactions.
@@ -128,9 +135,10 @@ py -m pip install -r requirements-dev.txt
 py -m playwright install chromium
 ```
 
-Playwright and Chromium are required only for the browser test suite. PyInstaller and
-Pillow are required only for packaging. On Windows, the runtime requirements file does
-not install any package. On Linux, it installs `keyring` and its Secret Service support.
+Playwright and Chromium are required only for the browser test suite. PyInstaller is
+required only for packaging. On Windows, the runtime requirements install Pillow and
+pystray for the notification-area icon. On Linux, they install `keyring` and its
+Secret Service support.
 
 No configuration file is required. On first launch the app creates `data/` beside the
 executable or source checkout and asks you to connect to Civitai. Extract packaged builds
@@ -174,11 +182,19 @@ access** in Settings stops the container instead of restarting the app; the new 
 takes effect on the next `up`.
 
 The executable is a local Python/SQLite server; the browser tab is its interface rather
-than a standalone webpage. The server listens only on the local computer and opens the
+than a standalone webpage. The server listens only on the local computer by default and opens the
 application in your default browser. On Windows, its notification-area icon remains
 visible while it runs and provides **Open** and **Exit**. Use **Close app** in the page or
 **Exit** in that menu to stop it cleanly; closing the browser tab alone does not stop the
 Python process.
+
+Optional **LAN access** shares this same connected account with other devices. It has
+no password, pairing code, or separate user permissions and uses unencrypted HTTP.
+Anyone who can reach its address can browse the account's local data, change settings,
+and use granted Civitai actions. Enable it only on a private network whose devices and
+users you trust. Keep it off on shared or untrusted networks, and never forward its
+port to the internet. Host/Origin checks protect browser boundaries; they do not
+authenticate LAN clients.
 
 ## Civitai connection and configuration
 
@@ -235,7 +251,9 @@ Register `http://localhost:8765/oauth/callback` exactly as the redirect URI. A c
 can also be entered through the first-launch UI. Access and refresh tokens are protected
 with Windows DPAPI on Windows or stored in the desktop Secret Service keyring on Linux.
 The app deliberately refuses plaintext or unavailable Linux keyring backends. Tokens are
-never sent to browser JavaScript or written to application logs.
+never sent to browser JavaScript. Diagnostics redact common credential fields and
+authorization headers, but logs can still contain artwork IDs, creator names and local
+paths. Review them before sharing; do not publish the runtime `data/` folder.
 
 The authenticated integration reads reaction history, follows, creator profiles, tags,
 and the account's Content Controls. Follow and reaction writes occur only when the user
@@ -264,7 +282,12 @@ It can include:
   mirrored Content Controls;
 - `oauth_tokens.dpapi`: Windows-only DPAPI-encrypted OAuth credentials;
 - `oauth_client.json` and `settings.json`: local configuration, including Gallery preferences;
-- creator/follow caches, the single-instance marker, and `error.log`;
+- creator/follow caches and the single-instance marker;
+- `error.log`: server exceptions, collection failures, and browser diagnostics for
+  removed cards, failed artwork previews/originals, and successful fallback loads.
+  Browser entries include image IDs and removal reasons; image URLs omit query
+  parameters and fragments. The log rotates at 5 MB to `error.log.1`;
+- `capture-log.jsonl`: automatic capture runs, outcomes, counts, and failure reasons;
 - `api-failures.jsonl`: a size-limited, rotating journal of failed Civitai API status
   codes, safe response headers, request context, and truncated response excerpts. Common
   credential-shaped fields are redacted before the entry is written.
@@ -335,20 +358,46 @@ before moving through a creator's carousel. Opening image details does not rebui
 reset the feed. See [docs/content-controls.md](docs/content-controls.md) for the detailed
 behavior and API tradeoff.
 
+## Media, models, and read recovery
+
+The Filters panel includes All, Images only, and Videos only. The media choice is saved
+with your preferences and participates in filter chips and Reset. Media and base-model
+filters select artwork before artist counts, covers, Popular totals, personal ranking,
+and pagination are calculated. Artists remain grouped, including mixed-media artists.
+Focus a card to use Left/Right for its carousel, or Space to play/pause its visible video.
+Inputs and native video controls keep their own keyboard behavior.
+
+Base-model labels are normalized on new collection and when reading existing records;
+the archive is not rewritten. A concatenated label is separated only when its entire
+value has one unambiguous decomposition into known complete base-model names. Unknown
+labels remain intact. The exact upstream origin of historical concatenated labels has
+not been established. Base-model filtering does not imply comprehensive resource or
+LoRA filtering: most archived videos lack that metadata. A future enrichment pass should
+use a queue of distinct model-version IDs with a fixed per-pass budget (for example,
+50 IDs or two minutes), the shared request pacer, cached successes, retryable failures,
+and explicit coverage reporting, rather than fetching details for every artwork. That
+enrichment strategy is a recommendation; it is not implemented by this change.
+
+Interactive Civitai reads have at most three server attempts for transient failures;
+background work keeps its existing retry budget. Numeric and HTTP-date Retry-After
+headers are respected. Mutations are never automatically replayed. Browser requests
+have a deadline and do not retry automatically. Failed tag batches stay unknown so later
+requests can retry, and reaction lookup failures produce an error rather than an empty
+success. Historical empty tag records cannot safely be distinguished from genuine empty
+results and are not bulk-deleted.
+
 ## Testing
 
 Tests are existing standalone Python scripts rather than a separate test framework. They
 use temporary data directories and synthetic records.
 
 ```powershell
-Get-ChildItem .\tests\*.py | ForEach-Object {
-  py $_.FullName
-  if ($LASTEXITCODE) { throw "Test failed: $($_.Name)" }
-}
+py -B scripts/run_tests.py
 ```
 
-Some tests start local servers and Chromium. If a run is interrupted, check for a leftover
-Python test process before running the suite again.
+Some tests start local servers and Chromium. The runner isolates data directories and
+remaps test server ports to avoid running apps. Per-test logs and results are written to
+`reports/full-suite/`. Use `--only test_name other_test_name` for a targeted run.
 
 ## Building the Windows package
 
