@@ -255,7 +255,10 @@ class SocialClient:
         })
 
     def image_collection_ids(self, image_ids: list[int]) -> dict[int, set[int] | None]:
-        """Which of the account's collections hold each image; None where Civitai failed."""
+        """Which of the account's collections hold each image; None where Civitai has no record.
+
+        Any other per-item failure raises for the whole batch, like batch_query_optional.
+        """
         values = self.batch_query_optional("collection.getUserCollectionItemsByItem",
                                            [{"type": "Image", "imageId": int(value)} for value in image_ids])
         result: dict[int, set[int] | None] = {}

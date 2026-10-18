@@ -1961,7 +1961,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.json_response({"error": "Your comment was posted, but adding the video "
                                         "to Music Focus failed. Add it on Civitai."}, 502)
                     return
-                held = client.image_collection_ids([image_id]).get(image_id)
+                # Both writes succeeded, so a failed read-back must not report an error:
+                # the reader would retry an add that already happened.
+                try:
+                    held = client.image_collection_ids([image_id]).get(image_id)
+                except Exception as error:
+                    log_internal_error("Music Focus confirm after add", error)
+                    held = None
                 in_collection = True if held is None else collection["id"] in held
                 if in_collection:
                     MUSIC_SCOUT.mark_focus(image_id)
