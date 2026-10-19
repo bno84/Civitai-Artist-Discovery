@@ -69,15 +69,16 @@ assert [item["id"] for item in again["items"]] == [30, 41], again
 assert len(archive.requests) == requests, "a loaded queue must not refetch"
 
 # -- music models: separate feeds, merged newest first, duplicates once ---------------
-yue, ace = (model["modelId"] for model in MUSIC_MODELS)
+yue, ace, minimax = (model["modelId"] for model in MUSIC_MODELS)
 pages = {
     (yue, None): ([row(1, "A", 50), row(2, "B", 20)], None),
     (ace, None): ([row(3, "C", 40), row(1, "A", 50), row(4, "D", 10)], None),
+    (minimax, None): ([row(5, "E", 30)], None),
 }
 archive = FakeArchive(pages)
 page = MusicScout(archive).page("music-models", 0, 10, levels=(1, 2, 4))
-assert [item["id"] for item in page["items"]] == [1, 3, 2, 4], page["items"]
-assert {request["modelId"] for request in archive.requests} == {yue, ace}, archive.requests
+assert [item["id"] for item in page["items"]] == [1, 3, 5, 2, 4], page["items"]
+assert {request["modelId"] for request in archive.requests} == {yue, ace, minimax}, archive.requests
 assert page["items"][1]["source"] == "ACE-Step Audio Gen", page["items"][1]
 
 # -- lazy: one screen costs one page --------------------------------------------------

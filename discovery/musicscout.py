@@ -55,6 +55,7 @@ PER_CREATOR_MAX = 50
 MUSIC_MODELS = (
     {"modelId": 2944296, "name": "YuE2 3B", "url": "https://civitai.red/models/2944296"},
     {"modelId": 2549270, "name": "ACE-Step Audio Gen", "url": "https://civitai.red/models/2549270"},
+    {"modelId": 2855966, "name": "MiniMax Music 3", "url": "https://civitai.red/models/2855966"},
 )
 
 # The account's own curated collection. Its owner can add a video from any queue.
