@@ -62,11 +62,12 @@ MUSIC_MODELS = (
 MUSIC_FOCUS = {"collectionId": 17980935, "name": "Music Focus 🎸",
                "url": "https://civitai.red/collections/17980935",
                # The comment the owner leaves on every video they add, in the markup
-               # Civitai's own editor produced for it. The link to the collection is the
+               # Civitai's own editor produced for it, minus its rel="ugc" and with the
+               # collection's newest-first sort in the link. The link to the collection is the
                # point of the comment. It is posted exactly as is; anything different is
                # written on Civitai itself.
-               "commentHtml": '<p>Your track has <a target="_blank" rel="ugc" '
-                              'href="https://civitai.red/collections/17980935"><strong>Music '
+               "commentHtml": '<p>Your track has <a target="_blank" '
+                              'href="https://civitai.red/collections/17980935?sort=Recently+Added"><strong>Music '
                               'Focus</strong> 🎸</a> and is added to the collection! 🎧 Give it '
                               'a listen and share more jams if you like.</p>'}
 # Membership is read from the collection itself, so anyone signed in sees the same

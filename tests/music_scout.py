@@ -143,7 +143,7 @@ else:
     raise AssertionError("Music Focus must require sign-in")
 
 # -- the default comment links to the collection, as the owner's own comments do -----
-assert ('<a target="_blank" rel="ugc" href="https://civitai.red/collections/17980935">'
+assert ('<a target="_blank" href="https://civitai.red/collections/17980935?sort=Recently+Added">'
         '<strong>Music Focus</strong> 🎸</a>') in MUSIC_FOCUS["commentHtml"], MUSIC_FOCUS["commentHtml"]
 
 
