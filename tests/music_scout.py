@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from discovery.musicscout import HubBuilding, MUSIC_FOCUS, MUSIC_MODELS, MusicScout
+from discovery.musicscout import H3_MUSEUM, HubBuilding, MUSIC_FOCUS, MUSIC_MODELS, MusicScout
 
 CDN = "https://image.civitai.com/key"
 
@@ -142,6 +142,17 @@ except PermissionError:
 else:
     raise AssertionError("Music Focus must require sign-in")
 
+
+# -- H3 Movies Museum: the same collection feed, for its own collection ---------------
+class MuseumSocial:
+    def query(self, procedure, payload):
+        assert payload["collectionId"] == H3_MUSEUM["collectionId"], payload
+        return {"items": [trpc_row(4, "Curated")], "nextCursor": None}
+
+
+page = MusicScout(FakeArchive({}), social=lambda: MuseumSocial()).page("h3-museum", 0, 10)
+assert [item["id"] for item in page["items"]] == [4], page["items"]
+
 # -- the default comment links to the collection, as the owner's own comments do -----
 assert ('<a target="_blank" href="https://civitai.red/collections/17980935?sort=Recently+Added">'
         '<strong>Music Focus</strong> 🎸</a>') in MUSIC_FOCUS["commentHtml"], MUSIC_FOCUS["commentHtml"]
@@ -154,6 +165,8 @@ class MemberSocial:
 
     def query(self, procedure, payload):
         self.calls += 1
+        if payload["collectionId"] == H3_MUSEUM["collectionId"]:
+            return {"items": [{"id": 2}, {"id": 8}], "nextCursor": None}
         if payload.get("cursor") is None:
             return {"items": [{"id": 1}, {"id": 2}], "nextCursor": 5}
         return {"items": [{"id": 3}], "nextCursor": None}
@@ -161,9 +174,13 @@ class MemberSocial:
 
 members = MemberSocial()
 scout = MusicScout(FakeArchive({}), social=lambda: members)
-assert scout.focus_ids() == {1, 2, 3} and members.calls == 2
-scout.mark_focus(4)
-assert scout.focus_ids() == {1, 2, 3, 4} and members.calls == 2, "a fresh cache must not refetch"
+focus = MUSIC_FOCUS["collectionId"]
+assert scout.collection_ids(focus) == {1, 2, 3} and members.calls == 2
+scout.mark_member(focus, 4)
+assert scout.collection_ids(focus) == {1, 2, 3, 4} and members.calls == 2, "a fresh cache must not refetch"
+# Each collection is read and cached on its own.
+assert scout.collection_ids(H3_MUSEUM["collectionId"]) == {2, 8} and members.calls == 3
+assert scout.collection_ids(focus) == {1, 2, 3, 4} and members.calls == 3
 
 # -- viewed videos persist and are flagged on every later answer ----------------------
 import tempfile
@@ -181,6 +198,8 @@ with tempfile.TemporaryDirectory() as folder:
 # -- MF hub: newest videos from Music Focus creators, capped, kept between sessions ----
 class HubSocial:
     def query(self, procedure, payload):
+        if payload["collectionId"] == H3_MUSEUM["collectionId"]:
+            return {"items": [{"id": 4, "user": {"username": "Bo"}}], "nextCursor": None}
         return {"items": [{"id": 1, "user": {"username": "Ana"}}, {"id": 2, "user": {"username": "Bo"}},
                           {"id": 3, "user": {"username": "ana"}}], "nextCursor": None}
 
@@ -221,6 +240,13 @@ with tempfile.TemporaryDirectory() as folder:
     later = MusicScout(HubArchive(), social=lambda: HubSocial(), root=Path(folder))
     assert [item["id"] for item in later.page("mf-hub", 0, 10, per_creator=1)["items"]] == [901, 911]
     assert later.archive.users == [], later.archive.users
+    # Another collection's hub shares the saved lists of creators both have, and names
+    # its own collection as the source.
+    museum = later.page("museum-hub", 0, 10, per_creator=1)["items"]
+    assert [item["id"] for item in museum] == [911], museum
+    assert museum[0]["source"] == H3_MUSEUM["name"], museum
+    assert later.archive.users == [], "a shared creator must not be read again"
+    assert later.page("mf-hub", 0, 10, per_creator=1)["items"][1]["source"] == MUSIC_FOCUS["name"]
     # Older than the freshness window: caught up from the global feed before serving.
     # Only the pages since the last read are asked for, and only Music Focus creators kept.
     with later.viewed_lock, later.viewed_db:

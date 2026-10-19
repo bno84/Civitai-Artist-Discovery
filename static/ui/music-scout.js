@@ -55,8 +55,8 @@ export function mountMusicScout() {
     // once. `baseline` is what they were when the video's listing counts were read, so a
     // count shown is the listing's count adjusted by the reader's own change since.
     reacted: new Map(), baseline: new Map(), reactionQueue: new Map(),
-    // Whether each video is in the Music Focus collection, by id; absent means unknown.
-    focus: new Map(), focusing: new Set(),
+    // Per collection key, whether each video is in it, by id; absent means unknown.
+    members: new Map(), focusing: new Set(),
     muted: audio.muted === true, volume: Number.isFinite(audio.volume) ? audio.volume : 1,
   };
   let current = $('msVideoA');
@@ -275,32 +275,44 @@ export function mountMusicScout() {
     }).catch(error => console.warn('Music Scout reaction state could not be read', error));
   }
 
-  function loadFocusState(items) {
+  function setMember(key, id, value) {
+    if (!state.members.has(key)) state.members.set(key, new Map());
+    state.members.get(key).set(String(id), !!value);
+  }
+  const collections = () => state.catalog?.collections || [];
+  const membershipKnown = item => collections().every(collection =>
+    state.members.get(collection.key)?.has(String(item.id)));
+
+  function loadCollectionState(items) {
     if (!state.auth.connected || !items.length) return;
     const params = new URLSearchParams();
     for (const item of items) params.append('imageId', String(item.id));
-    api(`/api/music/focus-status?${params}`).then(result => {
+    api(`/api/music/collection-status?${params}`).then(result => {
       state.canAddFocus = !!result.canAdd;
-      for (const [id, value] of Object.entries(result.images || {})) state.focus.set(id, !!value);
+      for (const [key, images] of Object.entries(result.collections || {})) {
+        for (const [id, value] of Object.entries(images)) setMember(key, id, value);
+      }
       renderReactions();
-    }).catch(error => console.warn('Music Focus state could not be read', error));
+    }).catch(error => console.warn('Music Scout collection state could not be read', error));
   }
 
-  // Read-only for everyone but the collection's owner. Adding always posts a comment, so
-  // it goes through a confirmation; removing is left to Civitai, where a reason is given.
-  function focusButton(item) {
-    const name = state.catalog?.musicFocus?.name || 'Music Focus';
-    const known = state.focus.has(String(item.id));
-    const inside = state.focus.get(String(item.id)) === true;
+  // Read-only for everyone but Music Focus's owner. Adding always posts a comment, so it
+  // goes through a confirmation; removing is left to Civitai, where a reason is given.
+  function collectionButton(collection, item) {
+    const name = collection.name;
+    const known = state.members.get(collection.key)?.has(String(item.id));
+    const inside = state.members.get(collection.key)?.get(String(item.id)) === true;
+    const addable = collection.key === state.catalog.musicFocus.key && state.canAddFocus;
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'ms-focus';
+    button.dataset.collection = collection.key;
     button.classList.toggle('selected', inside);
-    button.textContent = '🎸';
+    button.textContent = collection.icon;
     button.setAttribute('aria-label', inside ? `In ${name}` : `Not in ${name}`);
     const readOnly = !state.auth.connected ? `Sign in to see what is in ${name}`
       : !known ? `Checking ${name}…`
-      : !state.canAddFocus ? (inside ? `In ${name}` : `Not in ${name}`) : '';
+      : !addable ? (inside ? `In ${name}` : `Not in ${name}`) : '';
     if (readOnly) {
       button.classList.add('read-only');
       button.setAttribute('aria-disabled', 'true');
@@ -396,7 +408,7 @@ export function mountMusicScout() {
     renderReactions();
     try {
       const result = await api('/api/music/focus', { method: 'POST', body: JSON.stringify({ imageId: item.id }) });
-      state.focus.set(id, !!result.inCollection);
+      setMember(state.catalog.musicFocus.key, id, result.inCollection);
       addDialog.close();
       message(result.alreadyIn ? 'That video was already in Music Focus; no comment was posted.'
         : result.inCollection ? '' : 'The comment was posted, but Civitai does not list the video in Music Focus yet.');
@@ -444,7 +456,7 @@ export function mountMusicScout() {
     total.className = 'total-reactions';
     total.title = mine ? 'Total reactions' : state.auth.connected ? 'Checking your reactions…' : 'Total reactions';
     total.textContent = `Total ${formatCount(REACTIONS.reduce((sum, [name, , key]) => sum + count(name, key), 0))}`;
-    host.replaceChildren(...buttons, total, focusButton(item));
+    host.replaceChildren(...buttons, total, ...collections().map(collection => collectionButton(collection, item)));
   }
 
   // A click shows at once. Requests for one video go one after another, in click order,
@@ -486,13 +498,13 @@ export function mountMusicScout() {
     state.loading = api(`/api/music/queue?${params}`).then(page => {
       if (token !== state.token) return;
       // The server answers by offset, so an answer is appended only where it starts.
-      // MF hub answers "still reading creators" until its first build is done.
+      // A hub answers "still reading creators" until its first build is done.
       state.building = page.building ? page : null;
       if (page.building || page.offset !== state.items.length) return;
       state.items.push(...page.items);
       state.exhausted = !!page.exhausted && state.items.length >= page.total;
       loadReactionState(page.items);
-      loadFocusState(page.items);
+      loadCollectionState(page.items);
     }).finally(() => { if (token === state.token) state.loading = null; });
     return state.loading;
   }
@@ -580,7 +592,7 @@ export function mountMusicScout() {
     try {
       await fetchMore();
       while (state.building && token === state.token) {
-        message(`Reading Music Focus creators… ${state.building.done}/${state.building.total}`);
+        message(`Reading ${state.building.name} creators… ${state.building.done}/${state.building.total}`);
         await new Promise(resolve => setTimeout(resolve, 500));
         if (token === state.token) await fetchMore();
       }
@@ -638,8 +650,8 @@ export function mountMusicScout() {
       state.auth = { connected: !!auth.connected, socialWrite: !!auth.socialWrite };
       const unknown = state.items.filter(item => !state.reacted.has(String(item.id)));
       for (let start = 0; start < unknown.length; start += PAGE) loadReactionState(unknown.slice(start, start + PAGE));
-      const unchecked = state.items.filter(item => !state.focus.has(String(item.id)));
-      for (let start = 0; start < unchecked.length; start += PAGE) loadFocusState(unchecked.slice(start, start + PAGE));
+      const unchecked = state.items.filter(item => !membershipKnown(item));
+      for (let start = 0; start < unchecked.length; start += PAGE) loadCollectionState(unchecked.slice(start, start + PAGE));
       renderReactions();
     }).catch(() => {});
     if (state.catalog) return;

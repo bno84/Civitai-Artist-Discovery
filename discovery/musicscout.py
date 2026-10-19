@@ -59,8 +59,8 @@ MUSIC_MODELS = (
 )
 
 # The account's own curated collection. Its owner can add a video from any queue.
-MUSIC_FOCUS = {"collectionId": 17980935, "name": "Music Focus 🎸",
-               "url": "https://civitai.red/collections/17980935",
+MUSIC_FOCUS = {"key": "music-focus", "collectionId": 17980935, "name": "Music Focus 🎸",
+               "icon": "🎸", "url": "https://civitai.red/collections/17980935",
                # The comment the owner leaves on every video they add, in the markup
                # Civitai's own editor produced for it, minus its rel="ugc" and with the
                # collection's newest-first sort in the link. The link to the collection is the
@@ -70,12 +70,20 @@ MUSIC_FOCUS = {"collectionId": 17980935, "name": "Music Focus 🎸",
                               'href="https://civitai.red/collections/17980935?sort=Recently+Added"><strong>Music '
                               'Focus</strong> 🎸</a> and is added to the collection! 🎧 Give it '
                               'a listen and share more jams if you like.</p>'}
+# Someone else's curated collection of great videos, shown read-only.
+H3_MUSEUM = {"key": "h3-museum", "collectionId": 18403457, "name": "H3 Movies Museum 🎬",
+             "icon": "🎬", "url": "https://civitai.red/collections/18403457"}
+# Each shows its membership next to the reactions, and has its own queue and hub.
+COLLECTIONS = (MUSIC_FOCUS, H3_MUSEUM)
+COLLECTION_BY_KEY = {collection["key"]: collection for collection in COLLECTIONS}
 # Membership is read from the collection itself, so anyone signed in sees the same
 # answer the owner does. Reread at most this often; an add made here updates it at once.
 FOCUS_TTL_SECONDS = 600
 FOCUS_PAGE_SIZE = 200
 FOCUS_MAX_PAGES = 50
-# MF hub: each Music Focus creator's newest videos. Two public reads keep that list:
+# A hub (MF hub and the like): the newest videos of each creator in a collection. The
+# saved lists are per creator, so collections sharing a creator share the reads. Two
+# public reads keep that list:
 #
 # - Per creator, the creator's latest few videos: complete, one request each. 112
 #   creators take about 8 seconds four at a time when Civitai has nothing cached. This
@@ -112,11 +120,19 @@ QUEUES = (
      "description": "Every new video, newest first."},
     {"id": "music-focus", "name": MUSIC_FOCUS["name"],
      "description": "Your Music Focus collection, most recently added first. Needs sign-in.",
-     "signIn": True},
+     "signIn": True, "collection": "music-focus"},
     {"id": "mf-hub", "name": "MF hub",
      "description": "Newest videos from creators who have been collected in Music Focus, "
                     "capped per creator. Needs sign-in.",
-     "perCreator": True, "signIn": True},
+     "perCreator": True, "signIn": True, "hub": "music-focus"},
+    {"id": "h3-museum", "name": H3_MUSEUM["name"],
+     "description": "Sillycat83's collection of great videos, most recently added first. "
+                    "Needs sign-in.",
+     "signIn": True, "collection": "h3-museum"},
+    {"id": "museum-hub", "name": "Museum hub",
+     "description": "Newest videos from creators collected in H3 Movies Museum, capped per "
+                    "creator. Needs sign-in.",
+     "perCreator": True, "signIn": True, "hub": "h3-museum"},
 )
 PER_CREATOR_QUEUES = {queue["id"] for queue in QUEUES if queue.get("perCreator")}
 
@@ -163,13 +179,13 @@ def _feed_position(cursor: object, items: list) -> float | None:
 
 
 class HubBuilding(Exception):
-    """MF hub has no saved videos yet for some creators; they are being read now."""
+    """A hub has no saved videos yet for some creators; they are being read now."""
 
-    def __init__(self, done: int, total: int):
-        super().__init__("Reading Music Focus creators")
-        self.done, self.total = done, total
+    def __init__(self, done: int, total: int, name: str):
+        super().__init__(f"Reading {name} creators")
+        self.done, self.total, self.name = done, total, name
 
-QUEUE_IDS = {queue["id"] for queue in QUEUES}
+QUEUE_BY_ID = {queue["id"]: queue for queue in QUEUES}
 
 
 def _still(raw: dict, url: str) -> str:
@@ -351,12 +367,13 @@ class MusicScout:
         # counts here so a revisit shows them.
         self.served: dict[int, dict] = {}
         self.lock = threading.Lock()
-        self.focus_ids_cache: set[int] | None = None
-        # Creator username by casefolded key, from the same read of the collection.
-        self.focus_creators_cache: dict[str, str] = {}
-        self.focus_loaded_at = 0.0
-        self.focus_lock = threading.Lock()
-        self.hub_job = {"running": False, "done": 0, "total": 0, "error": None}
+        # Per collection id: when it was read, its video ids, and its creators' usernames
+        # by casefolded key, all from the same read.
+        self.members: dict[int, tuple[float, set[int], dict[str, str]]] = {}
+        self.member_locks = {collection["collectionId"]: threading.Lock()
+                             for collection in COLLECTIONS}
+        # One reading job at a time, whichever hub asked: the saved lists are shared.
+        self.hub_job = {"running": False, "done": 0, "total": 0, "error": None, "name": ""}
         self.hub_catchup_lock = threading.Lock()
         self.hub_lock = threading.Lock()
         # Which videos the reader has already watched, kept across sessions so a queue
@@ -395,26 +412,29 @@ class MusicScout:
         if queue_id == "music-models":
             return Queue([Feed(request, {**base, "modelId": model["modelId"]}, model["name"])
                           for model in MUSIC_MODELS], allow=allow)
-        if queue_id == "music-focus":
+        queue = QUEUE_BY_ID[queue_id]
+        if "collection" in queue:
+            collection = COLLECTION_BY_KEY[queue["collection"]]
             if self.social is None:
-                raise PermissionError("Sign in to Civitai to load the Music Focus collection")
+                raise PermissionError(f"Sign in to Civitai to load {collection['name']}")
             self.social()  # Fail now, not on the first page, when nobody is signed in.
-            return Queue([CollectionFeed(self.social, MUSIC_FOCUS["collectionId"], mask)],
+            return Queue([CollectionFeed(self.social, collection["collectionId"], mask)],
                          allow=allow)
         if queue_id == "per-creator":
             return Queue([Feed(request, base)], per_creator=per_creator, allow=allow)
-        if queue_id == "mf-hub":
+        if "hub" in queue:
             if self.social is None:
-                raise PermissionError("Sign in to Civitai to load MF hub")
+                raise PermissionError(f"Sign in to Civitai to load {queue['name']}")
             feed = Feed(None, {})
-            feed.buffer, feed.exhausted = self.hub_entries(per_creator, mask), True
+            feed.buffer = self.hub_entries(COLLECTION_BY_KEY[queue["hub"]], per_creator, mask)
+            feed.exhausted = True
             return Queue([feed], per_creator=per_creator, allow=allow)
         return Queue([Feed(request, base)], allow=allow)
 
     def page(self, queue_id: str, offset: int = 0, limit: int = 20,
              per_creator: int = PER_CREATOR_DEFAULT, levels=(1, 2), allow=lambda entry: True,
              refresh: bool = False) -> dict:
-        if queue_id not in QUEUE_IDS:
+        if queue_id not in QUEUE_BY_ID:
             raise ValueError("Unknown queue")
         per_creator = min(PER_CREATOR_MAX, max(1, int(per_creator)))
         offset, limit = max(0, int(offset)), min(100, max(1, int(limit)))
@@ -433,25 +453,25 @@ class MusicScout:
         result["items"] = [{**entry, "viewed": entry["id"] in viewed} for entry in result["items"]]
         return {"queue": queue_id, "offset": offset, **result}
 
-    def focus_ids(self) -> set[int]:
-        """Every video id in Music Focus. Needs a signed-in client, but not the owner's."""
-        return set(self._focus_listing()[0])
+    def collection_ids(self, collection_id: int) -> set[int]:
+        """Every video id in a collection. Needs a signed-in client, but not the owner's."""
+        return set(self._collection_listing(collection_id)[1])
 
-    def focus_creators(self) -> dict[str, str]:
-        """Everyone with a video in Music Focus, by casefolded username."""
-        return dict(self._focus_listing()[1])
+    def collection_creators(self, collection_id: int) -> dict[str, str]:
+        """Everyone with a video in a collection, by casefolded username."""
+        return dict(self._collection_listing(collection_id)[2])
 
-    def _focus_listing(self) -> tuple[set[int], dict[str, str]]:
-        with self.focus_lock:
-            if self.focus_ids_cache is not None and \
-                    time.monotonic() - self.focus_loaded_at < FOCUS_TTL_SECONDS:
-                return self.focus_ids_cache, self.focus_creators_cache
+    def _collection_listing(self, collection_id: int) -> tuple[float, set[int], dict[str, str]]:
+        with self.member_locks[collection_id]:
+            cached = self.members.get(collection_id)
+            if cached is not None and time.monotonic() - cached[0] < FOCUS_TTL_SECONDS:
+                return cached
             client = self.social()
             ids: set[int] = set()
             creators: dict[str, str] = {}
             cursor = None
             for _ in range(FOCUS_MAX_PAGES):
-                payload = {"collectionId": MUSIC_FOCUS["collectionId"], "sort": "Recently Added",
+                payload = {"collectionId": collection_id, "sort": "Recently Added",
                            "period": "AllTime", "types": ["video"], "limit": FOCUS_PAGE_SIZE,
                            "browsingLevel": 31}
                 if cursor:
@@ -469,11 +489,10 @@ class MusicScout:
                 cursor = value.get("nextCursor")
                 if not cursor or not items:
                     break
-            self.focus_ids_cache, self.focus_creators_cache = ids, creators
-            self.focus_loaded_at = time.monotonic()
-            return ids, creators
+            self.members[collection_id] = (time.monotonic(), ids, creators)
+            return self.members[collection_id]
 
-    # -- MF hub -----------------------------------------------------------------------
+    # -- hubs ---------------------------------------------------------------------------
 
     def _hub_rows(self) -> dict[str, tuple]:
         with self.viewed_lock:
@@ -485,7 +504,7 @@ class MusicScout:
                   "browsingLevel": mask, "withMeta": "false"}
         payload = public_listing(params)
         items = payload.get("items") if isinstance(payload.get("items"), list) else []
-        return [entry for entry in (video_entry(raw, MUSIC_FOCUS["name"]) for raw in items) if entry]
+        return [entry for entry in (video_entry(raw) for raw in items) if entry]
 
     def _hub_store(self, key: str, username: str, mask: int, limit: int) -> None:
         try:
@@ -511,10 +530,11 @@ class MusicScout:
             with self.hub_lock:
                 self.hub_job["running"] = False
 
-    def _hub_start(self, targets: list[tuple[str, str]], mask: int, limit: int) -> dict:
+    def _hub_start(self, name: str, targets: list[tuple[str, str]], mask: int, limit: int) -> dict:
         with self.hub_lock:
             if not self.hub_job["running"]:
-                self.hub_job = {"running": True, "done": 0, "total": len(targets), "error": None}
+                self.hub_job = {"running": True, "done": 0, "total": len(targets), "error": None,
+                                "name": name}
                 threading.Thread(target=self._hub_run, args=(targets, mask, limit),
                                  name="mf-hub", daemon=True).start()
             return dict(self.hub_job)
@@ -538,7 +558,7 @@ class MusicScout:
             items = payload.get("items") if isinstance(payload.get("items"), list) else []
             for raw in items:
                 key = str(raw.get("username") or "").casefold()
-                if key in creators and (entry := video_entry(raw, MUSIC_FOCUS["name"])):
+                if key in creators and (entry := video_entry(raw)):
                     found.setdefault(key, []).append(entry)
             cursor = (payload.get("metadata") or {}).get("nextCursor")
             reached = _feed_position(cursor, items)
@@ -560,8 +580,8 @@ class MusicScout:
                                        (key, username, row_mask, fetch_limit, started, json.dumps(entries)))
         return True
 
-    def hub_entries(self, per_creator: int, mask: int) -> list[dict]:
-        """Every Music Focus creator's newest videos, newest first.
+    def hub_entries(self, collection: dict, per_creator: int, mask: int) -> list[dict]:
+        """Every collection creator's newest videos, newest first.
 
         Creators with nothing saved are read one by one, in parallel, and HubBuilding is
         raised until they all have been. Saved lists older than HUB_TTL_SECONDS are caught
@@ -571,32 +591,35 @@ class MusicScout:
         with self.hub_lock:
             job = dict(self.hub_job)
         if job["running"]:
-            raise HubBuilding(job["done"], job["total"])
-        creators = self.focus_creators()
+            raise HubBuilding(job["done"], job["total"], job["name"])
+        name = collection["name"]
+        creators = self.collection_creators(collection["collectionId"])
         limit = max(HUB_FETCH_MIN, per_creator)
         rows = self._hub_rows()
         missing = [(key, username) for key, username in creators.items()
                    if (row := rows.get(key)) is None or row[1] != mask or row[2] < limit]
         if missing:
-            job = self._hub_start(missing, mask, limit)
+            job = self._hub_start(name, missing, mask, limit)
             if job["error"] and not job["running"]:
                 raise RuntimeError(job["error"])
-            raise HubBuilding(job["done"], job["total"])
+            raise HubBuilding(job["done"], job["total"], job["name"])
         with self.hub_catchup_lock:
             rows = self._hub_rows()
             since = min((rows[key][3] for key in creators), default=time.time())
             if time.time() - since > HUB_TTL_SECONDS and \
                     not self._hub_catch_up(creators, rows, mask, since):
-                job = self._hub_start(list(creators.items()), mask, limit)
-                raise HubBuilding(job["done"], job["total"])
+                job = self._hub_start(name, list(creators.items()), mask, limit)
+                raise HubBuilding(job["done"], job["total"], job["name"])
             rows = self._hub_rows()
-        entries = [entry for key in creators if key in rows for entry in json.loads(rows[key][4])]
+        # Saved entries are shared between hubs, so the source is named as they are served.
+        entries = [{**entry, "source": name} for key in creators if key in rows
+                   for entry in json.loads(rows[key][4])]
         return sorted(entries, key=lambda entry: str(entry.get("createdAt") or ""), reverse=True)
 
-    def mark_focus(self, image_id: int) -> None:
-        with self.focus_lock:
-            if self.focus_ids_cache is not None:
-                self.focus_ids_cache.add(int(image_id))
+    def mark_member(self, collection_id: int, image_id: int) -> None:
+        with self.member_locks[collection_id]:
+            if collection_id in self.members:
+                self.members[collection_id][1].add(int(image_id))
 
     def served_entry(self, image_id: int) -> dict | None:
         with self.lock:
@@ -605,5 +628,5 @@ class MusicScout:
     @staticmethod
     def catalog() -> dict:
         return {"queues": list(QUEUES), "musicModels": list(MUSIC_MODELS),
-                "musicFocus": MUSIC_FOCUS,
+                "musicFocus": MUSIC_FOCUS, "collections": list(COLLECTIONS),
                 "perCreatorDefault": PER_CREATOR_DEFAULT, "perCreatorMax": PER_CREATOR_MAX}

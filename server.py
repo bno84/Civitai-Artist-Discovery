@@ -28,7 +28,7 @@ from discovery.civitai import API_LANE, CandidateCache
 from discovery.capture import AutoCapture
 from discovery.availability import ArtworkAvailability
 from discovery.timemachine import TimeMachine
-from discovery.musicscout import MUSIC_FOCUS, HubBuilding, MusicScout
+from discovery.musicscout import COLLECTIONS, MUSIC_FOCUS, HubBuilding, MusicScout
 from discovery.history import HistoryArchive, RetryBudgetExhausted, parse_day, previous_local_day
 from discovery.selection import GallerySelection, media_type
 from discovery.oauth import (CALLBACK_PORT, OAuthSetupError, client_info,
@@ -1311,29 +1311,36 @@ class Handler(BaseHTTPRequestHandler):
                     refresh=query.get("refresh", ["0"])[0] == "1"))
             except HubBuilding as building:
                 self.json_response({"building": True, "done": building.done,
-                                    "total": building.total}, 202)
+                                    "total": building.total, "name": building.name}, 202)
             except PermissionError as error: self.json_response({"error": str(error)}, 401)
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Music Scout queue", error)
             return
-        if parsed.path == "/api/music/focus-status":
+        if parsed.path == "/api/music/collection-status":
             try:
                 if not connected_or_false():
-                    self.json_response({"error": "Sign in to see what is in Music Focus."}, 401)
+                    self.json_response({"error": "Sign in to see what is in the collections."}, 401)
                     return
                 image_ids = list(dict.fromkeys(int(value) for value in query.get("imageId", [])))
                 if not image_ids or len(image_ids) > 100:
                     raise ValueError("Request between 1 and 100 image IDs")
                 if any(not MUSIC_SCOUT.served_entry(image_id) for image_id in image_ids):
                     raise ValueError("Only videos Music Scout has shown can be checked")
-                members = MUSIC_SCOUT.focus_ids()
+                # One collection Civitai fails to list leaves only its icon unknown.
+                collections = {}
+                for collection in COLLECTIONS:
+                    try: members = MUSIC_SCOUT.collection_ids(collection["collectionId"])
+                    except Exception as error:
+                        log_internal_error(f"{collection['name']} membership", error)
+                        continue
+                    collections[collection["key"]] = {str(image_id): image_id in members
+                                                      for image_id in image_ids}
+                # Adding is offered for Music Focus alone, and only to its owner.
                 try: editable = music_focus_editable()
                 except Exception: editable = False
-                self.json_response({"collectionId": MUSIC_FOCUS["collectionId"], "canAdd": editable,
-                                    "images": {str(image_id): image_id in members
-                                               for image_id in image_ids}})
+                self.json_response({"canAdd": editable, "collections": collections})
             except ValueError as error: self.json_response({"error": str(error)}, 400)
-            except Exception as error: self.internal_error("Music Focus status", error)
+            except Exception as error: self.internal_error("Music Scout collection status", error)
             return
         if parsed.path == "/api/timemachine/status":
             try:
@@ -1946,7 +1953,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise PermissionError("Only the owner of Music Focus can add to it")
                 held = client.image_collection_ids([image_id]).get(image_id) or set()
                 if collection["id"] in held:
-                    MUSIC_SCOUT.mark_focus(image_id)
+                    MUSIC_SCOUT.mark_member(MUSIC_FOCUS["collectionId"], image_id)
                     self.json_response({"imageId": image_id, "inCollection": True,
                                         "commented": False, "alreadyIn": True})
                     return
@@ -1970,7 +1977,7 @@ class Handler(BaseHTTPRequestHandler):
                     held = None
                 in_collection = True if held is None else collection["id"] in held
                 if in_collection:
-                    MUSIC_SCOUT.mark_focus(image_id)
+                    MUSIC_SCOUT.mark_member(MUSIC_FOCUS["collectionId"], image_id)
                 self.json_response({"imageId": image_id, "inCollection": in_collection,
                                     "commented": True, "alreadyIn": False})
                 return
