@@ -305,7 +305,7 @@ export function mountMusicScout() {
     const addable = collection.key === state.catalog.musicFocus.key && state.canAddFocus;
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'ms-focus';
+    button.className = 'ms-collection';
     button.dataset.collection = collection.key;
     button.classList.toggle('selected', inside);
     button.textContent = collection.icon;

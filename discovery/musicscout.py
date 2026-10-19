@@ -78,9 +78,9 @@ COLLECTIONS = (MUSIC_FOCUS, H3_MUSEUM)
 COLLECTION_BY_KEY = {collection["key"]: collection for collection in COLLECTIONS}
 # Membership is read from the collection itself, so anyone signed in sees the same
 # answer the owner does. Reread at most this often; an add made here updates it at once.
-FOCUS_TTL_SECONDS = 600
-FOCUS_PAGE_SIZE = 200
-FOCUS_MAX_PAGES = 50
+COLLECTION_TTL_SECONDS = 600
+COLLECTION_PAGE_SIZE = 200
+COLLECTION_MAX_PAGES = 50
 # A hub (MF hub and the like): the newest videos of each creator in a collection. The
 # saved lists are per creator, so collections sharing a creator share the reads. Two
 # public reads keep that list:
@@ -464,15 +464,15 @@ class MusicScout:
     def _collection_listing(self, collection_id: int) -> tuple[float, set[int], dict[str, str]]:
         with self.member_locks[collection_id]:
             cached = self.members.get(collection_id)
-            if cached is not None and time.monotonic() - cached[0] < FOCUS_TTL_SECONDS:
+            if cached is not None and time.monotonic() - cached[0] < COLLECTION_TTL_SECONDS:
                 return cached
             client = self.social()
             ids: set[int] = set()
             creators: dict[str, str] = {}
             cursor = None
-            for _ in range(FOCUS_MAX_PAGES):
+            for _ in range(COLLECTION_MAX_PAGES):
                 payload = {"collectionId": collection_id, "sort": "Recently Added",
-                           "period": "AllTime", "types": ["video"], "limit": FOCUS_PAGE_SIZE,
+                           "period": "AllTime", "types": ["video"], "limit": COLLECTION_PAGE_SIZE,
                            "browsingLevel": 31}
                 if cursor:
                     payload["cursor"] = cursor

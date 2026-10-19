@@ -27,10 +27,10 @@
 .ms-reactions { background: transparent; backdrop-filter: none; padding: 0; }
 .ms-reactions button:disabled { cursor: default; opacity: .75; }
 .ms-reactions button.selected { background: var(--accent-surface); box-shadow: inset 0 0 0 1px var(--accent); }
-.ms-reactions .ms-focus { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; margin-left: 8px; padding: 0 9px; border: 0; border-radius: 7px; line-height: 1; font-size: 16px; filter: grayscale(1); opacity: .6; }
-.ms-reactions .ms-focus + .ms-focus { margin-left: 4px; }
-.ms-reactions .ms-focus:hover:not(:disabled), .ms-reactions .ms-focus.selected { filter: none; opacity: 1; }
-.ms-reactions .ms-focus.selected { background: var(--accent-surface); box-shadow: inset 0 0 0 1px var(--accent); }
+.ms-reactions .ms-collection { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; margin-left: 8px; padding: 0 9px; border: 0; border-radius: 7px; line-height: 1; font-size: 16px; filter: grayscale(1); opacity: .6; }
+.ms-reactions .ms-collection + .ms-collection { margin-left: 4px; }
+.ms-reactions .ms-collection:hover:not(:disabled), .ms-reactions .ms-collection.selected { filter: none; opacity: 1; }
+.ms-reactions .ms-collection.selected { background: var(--accent-surface); box-shadow: inset 0 0 0 1px var(--accent); }
 .ms-meta-main a { color: var(--text); font-weight: 700; font-size: 16px; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ms-meta-main a:hover { color: var(--accent); }
 .ms-meta-main small { color: var(--muted); font-size: 13px; }
@@ -81,7 +81,7 @@
   .ms-keys { display: none; }
 }
 
-.ms-reactions .ms-focus.read-only { cursor: default; }
+.ms-reactions .ms-collection.read-only { cursor: default; }
 .ms-focus-comment { display: grid; gap: 6px; }
 .ms-focus-comment span { font-weight: 700; }
 .ms-focus-comment small { color: var(--muted); font-size: 12px; }
