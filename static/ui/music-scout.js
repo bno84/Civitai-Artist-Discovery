@@ -15,7 +15,7 @@ const VIEWED_AFTER_MS = 1000;
 const SKIP_VIEWED_PAGES = 10;
 // Civitai's CDN sometimes hangs on a file rather than failing. A video or thumbnail that
 // has not arrived by then is dropped instead of holding the player or a connection.
-const LOAD_TIMEOUT_MS = 10000;
+const LOAD_TIMEOUT_MS = 6000;
 // The playing video restarts its download after each timeout, this many tries in all.
 const LOAD_ATTEMPTS = 3;
 // A saved place is only restored while recent; after that the queue opens fresh, since
