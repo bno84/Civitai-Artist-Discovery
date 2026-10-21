@@ -1,4 +1,5 @@
 """Real pointer/keyboard regressions for Content, Filters, and carousel ownership."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from datetime import datetime, timedelta
 import json
@@ -38,7 +39,7 @@ def step(page, card, key):
     return card.get_attribute('data-id')
 
 
-with tempfile.TemporaryDirectory(prefix='content-hover-', ignore_cleanup_errors=True) as temporary:
+with tempfile.TemporaryDirectory(prefix='cad3-content-hover-', ignore_cleanup_errors=True) as temporary:
     os.environ['CIVITAI_HISTORY_DATA_DIR'] = temporary
     from discovery.history import HistoryArchive
     from discovery.settings import AppSettings
@@ -117,7 +118,12 @@ with tempfile.TemporaryDirectory(prefix='content-hover-', ignore_cleanup_errors=
 
                 page.route('**/*', route)
                 page.goto(base, wait_until='domcontentloaded')
-                page.wait_for_selector('#gallery .creator-card')
+                try:page.wait_for_selector('#gallery .creator-card')
+                except Exception:
+                    raise AssertionError({'browser':name,'pageErrors':errors,
+                        'status':get(base,f'/api/history/status?date={DAY}&segment=all'),
+                        'serverError':(Path(temporary)/'error.log').read_text(encoding='utf-8') if (Path(temporary)/'error.log').exists() else None,
+                        'page':page.locator('main').inner_text()[:1500]})
                 wait_ready(page)
                 content, filters = page.locator('#contentFilter'), page.locator('#filterToggle')
                 compact, full = page.locator('#contentPanel'), page.locator('#filterPanel')

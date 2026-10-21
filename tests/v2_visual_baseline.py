@@ -4,6 +4,8 @@ Run: py tests/v2_visual_baseline.py --label baseline
 Only static assets are served; API and artwork responses are synthetic. No app server,
 account, archive, credentials, or external connection is used.
 """
+
+import test_safety  # Fail closed before any test network request.
 import argparse
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -129,7 +131,7 @@ def install_fixture(page, base_url, *, cached_tags=False):
 def capture(label):
     if not label.replace("-", "").replace("_", "").isalnum():
         raise ValueError("Use an alphanumeric label with optional hyphens/underscores")
-    output = ROOT / "reports" / "v2" / label
+    output = test_safety.REPORTS / "v2" / label
     output.mkdir(parents=True, exist_ok=True)
     handler = partial(StaticHandler, directory=str(ROOT / "static"))
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)

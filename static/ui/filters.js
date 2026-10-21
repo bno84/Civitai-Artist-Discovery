@@ -19,6 +19,16 @@ export function mountFilters(actions) {
   chips.setAttribute('aria-label', 'Active filters');
   chips.append(content);
   toolbar.append(chips);
+  const restrictions = document.createElement('span');
+  restrictions.id = 'sharedControlsStatus'; restrictions.className = 'filter-button';
+  restrictions.setAttribute('role', 'status'); restrictions.hidden = true; chips.append(restrictions);
+  window.addEventListener('shared-controls-summary', ({detail}) => {
+    const parts = [[detail.hiddenCreators,'hidden creators'],[detail.blockedUsers,'blocked users'],
+      [detail.hiddenTags,'hidden tags'],[detail.hiddenArtworks,'hidden artworks']].filter(([n]) => n > 0);
+    restrictions.textContent = parts.map(([n,label]) => `${n} ${label}`).join(' ? ');
+    restrictions.hidden = !parts.length;
+    restrictions.title = 'Shared Civitai content controls apply alongside the rating selection.';
+  });
   const panel = document.createElement('section');
   panel.id = 'filterPanel';
   panel.className = 'filter-panel hidden';
@@ -26,7 +36,7 @@ export function mountFilters(actions) {
   panel.innerHTML = '<div class="filter-head"><h2>Filters</h2><button type="button" class="quiet-button" aria-label="Close filters">×</button></div><div class="filter-sections"></div><button type="button" class="filter-reset">Reset filters</button>';
   panel.querySelector('.filter-sections').append(document.getElementById('contentMenu'), modelMenu);
   const media = document.createElement('label');
-  media.className = 'preference-field';
+  media.className = 'preference-field media-filter';
   media.innerHTML = '<span>Media type</span><select id="mediaType" aria-label="Media type"><option value="all">All</option><option value="image">Images only</option><option value="video">Videos only</option></select>';
   panel.querySelector('.filter-sections').prepend(media);
   const mediaSelect = media.querySelector('select');
@@ -91,7 +101,7 @@ export function mountFilters(actions) {
     position();
     button.setAttribute('aria-expanded', 'true');
     search.disabled = true;
-    await actions.refreshModels();
+    if (!document.body.classList.contains('community-view')) await actions.refreshModels();
     search.disabled = false;
     applyModelSearch();
   };

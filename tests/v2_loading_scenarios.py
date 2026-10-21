@@ -3,6 +3,8 @@
 Reports browser timings, not live Civitai/CDN speed. Assertions cover bounded paging,
 content verification, filtered reloads and deep-scroll restoration.
 """
+
+import test_safety  # Fail closed before any test network request.
 from functools import partial
 from http.server import ThreadingHTTPServer
 import json
@@ -116,7 +118,7 @@ def run():
     finally:
         server.shutdown()
         server.server_close()
-    output = ROOT / 'reports' / 'v2' / 'loading-scenarios.json'
+    output = test_safety.REPORTS / 'v2' / 'loading-scenarios.json'
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(results, indent=2), encoding='utf-8')
     print(json.dumps(results))

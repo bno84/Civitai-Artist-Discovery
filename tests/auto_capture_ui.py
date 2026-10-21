@@ -1,5 +1,7 @@
 """Compact collection controls show their state and persist without explanatory clutter."""
 
+import test_safety  # Fail closed before any test network request.
+
 import os
 from pathlib import Path
 import subprocess
@@ -12,7 +14,7 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 PORT = 8899
-SHOTS = ROOT / "reports" / "auto-capture"
+SHOTS = test_safety.REPORTS / "auto-capture"
 SHOTS.mkdir(parents=True, exist_ok=True)
 
 with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:
@@ -47,6 +49,7 @@ with tempfile.TemporaryDirectory(prefix="civitai-capture-ui-") as temporary:
             text = block.inner_text()
             assert "Save recent days" in text, text
             assert page.locator("#captureEnabled").is_checked() is False, "must be off until asked for"
+            page.locator("#captureNextRun", has_text="Off").wait_for()
             assert page.locator("#captureNextRun").inner_text() == "Off"
 
             page.locator("#captureEnabled").check()

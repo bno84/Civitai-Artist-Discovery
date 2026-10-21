@@ -1,4 +1,5 @@
 """Toolbar popovers stay beside their actual opener and within the viewport."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from functools import partial
 from http.server import ThreadingHTTPServer

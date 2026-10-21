@@ -14,6 +14,8 @@ import { startPerformanceTrace } from './performance.js';
 import { mountCalendar } from './calendar.js';
 import { reportClientEvent } from './diagnostics.js';
 import { mountPreferences } from './preferences.js';
+import { mountCommunity } from './community.js';
+import { mountDevelopmentDiagnostics } from './development.js';
 import { showDetailVideo, clearDetailVideo, suspendCardVideos, refreshVideoEligibility, resetVideoRecoveryBudget } from './video.js';
 
 if (new URLSearchParams(location.search).get('uiPerf') === '1') {
@@ -30,6 +32,8 @@ window.CivitaiUI = Object.freeze({ api, showArtwork, showVideoPoster, showGaller
 const controller = document.createElement('script');
 controller.src = '/app.js';
 controller.onload = () => {
+  mountCommunity();
+  mountDevelopmentDiagnostics().catch(() => {});
   groupPageControls();
   mountPageLayout();
   const preferences = mountPreferences();

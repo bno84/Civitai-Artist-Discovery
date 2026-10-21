@@ -8,11 +8,5 @@ The Windows build includes these unmodified Python libraries:
   <https://pypi.org/project/pillow/12.3.0/>
 
 The release folder includes each library's complete license text under `licenses/`.
-These libraries are used only for the Windows notification-area icon. They are not
-installed or imported by Linux runtime builds.
-
-The portable executable also includes the unmodified Python runtime and PyInstaller
-bootloader. Their supplied license texts are included as `licenses/Python-LICENSE.txt`
-and `licenses/PyInstaller-COPYING.txt`. The application's MIT license is `LICENSE.txt`.
-See [Python's license](https://docs.python.org/3.14/license.html) and
-[PyInstaller's licensing terms](https://pyinstaller.org/en/stable/license.html).
+pystray provides the optional Windows notification-area icon. Pillow also supports
+bounded local thumbnail resizing in Discovery 3.0 and is required on every platform.

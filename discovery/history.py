@@ -363,12 +363,6 @@ class HistoryArchive:
                     older_cursor TEXT, top_cursor TEXT, pages INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT, PRIMARY KEY(block_key,browsing_mask)
                 );
-                CREATE TABLE IF NOT EXISTS capture_recovery (
-                    block_key TEXT PRIMARY KEY, reason TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    restart_required INTEGER NOT NULL DEFAULT 0,
-                    next_retry_at REAL NOT NULL
-                );
             """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(days)")}
             for name in ("timezone", "start_utc", "end_utc", "top_cursor", "content_rating",
@@ -412,7 +406,29 @@ class HistoryArchive:
                 db.execute("DELETE FROM day_artist_cache_state")
                 db.execute("UPDATE days SET artist_levels=NULL")
                 db.execute(f"PRAGMA user_version={POPULAR_INDEX_VERSION}")
+        self._ensure_capture_recovery_schema()
         self._audit_legacy_block_coverage()
+
+    def _ensure_capture_recovery_schema(self) -> None:
+        """Add the retry ledger atomically; never repair or replace archive records.
+
+        Keep the existing archive user_version (artist-index version) independent.
+        An incompatible pre-existing table is an error, not permission to rewrite it.
+        """
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('''CREATE TABLE IF NOT EXISTS capture_recovery (
+                block_key TEXT PRIMARY KEY, reason TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                restart_required INTEGER NOT NULL DEFAULT 0,
+                next_retry_at REAL NOT NULL)''')
+            actual = [(row['name'], row['type'].upper(), row['notnull'], row['pk'])
+                      for row in db.execute('PRAGMA table_info(capture_recovery)')]
+            expected = [('block_key','TEXT',0,1), ('reason','TEXT',1,0),
+                        ('attempts','INTEGER',1,0), ('restart_required','INTEGER',1,0),
+                        ('next_retry_at','REAL',1,0)]
+            if actual != expected:
+                raise RuntimeError('Incompatible capture_recovery schema; existing data was retained')
 
     def _audit_legacy_block_coverage(self) -> None:
         """Reopen legacy half-days whose saved timestamps do not cover the block.

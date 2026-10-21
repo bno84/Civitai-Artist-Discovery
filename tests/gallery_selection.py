@@ -1,4 +1,5 @@
 """Combined media/model/rating filters precede counting, ranking and pagination."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from datetime import datetime, timedelta
 import json
@@ -34,7 +35,7 @@ def item(i, username, kind, model, reactions, level=1):
 
 
 with tempfile.TemporaryDirectory(
-    prefix="selection-test-", ignore_cleanup_errors=True
+    prefix="cad3-selection-test-", ignore_cleanup_errors=True
 ) as temporary:
     root = Path(temporary)
     archive = HistoryArchive(root / "history")

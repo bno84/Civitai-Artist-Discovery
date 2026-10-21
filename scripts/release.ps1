@@ -1,5 +1,5 @@
 # Build the portable folder release, package it, then print its verification hash.
-param([switch]$OneFile, [int]$KeepBackups = 3, [string]$OutputRoot)
+param([switch]$OneFile, [int]$KeepBackups = 3)
 
 $ErrorActionPreference = 'Stop'
 if ($OneFile) { throw 'Portable releases use the folder build; -OneFile is no longer supported.' }
@@ -31,19 +31,9 @@ try {
 
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
   $dist = Join-Path $root 'dist'
-  if ($OutputRoot) {
-    $OutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
-    $workspacePrefix = $root.TrimEnd('\') + '\'
-    if (-not $OutputRoot.StartsWith($workspacePrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
-        (Test-Path -LiteralPath $OutputRoot)) {
-      throw 'An isolated release requires a new output folder inside this checkout.'
-    }
-    New-Item -ItemType Directory -Path $OutputRoot | Out-Null
-    $dist = Join-Path $OutputRoot 'dist'
-  }
   $backupRoot = Join-Path $root 'backups'
   $existing = Get-ChildItem $dist -ErrorAction SilentlyContinue
-  if ($existing -and -not $OutputRoot) {
+  if ($existing) {
     $fingerprint = Get-BuildFingerprint $dist
     $newest = Get-ChildItem $backupRoot -Directory -Filter 'before-release-*' -ErrorAction SilentlyContinue |
       Sort-Object Name | Select-Object -Last 1
@@ -66,22 +56,20 @@ try {
   }
 
   # Keep the backup directory from growing without bound; the copies are ~11-33 MB each.
-  if (-not $OutputRoot) { Get-ChildItem $backupRoot -Directory -Filter 'before-release-*' -ErrorAction SilentlyContinue |
+  Get-ChildItem $backupRoot -Directory -Filter 'before-release-*' -ErrorAction SilentlyContinue |
     Sort-Object Name | Select-Object -SkipLast $KeepBackups |
-    ForEach-Object { Remove-Item $_.FullName -Recurse -Force; Write-Host "Pruned old backup $($_.Name)" } }
+    ForEach-Object { Remove-Item $_.FullName -Recurse -Force; Write-Host "Pruned old backup $($_.Name)" }
 
-  if ($OutputRoot) { & (Join-Path $PSScriptRoot 'build_exe.ps1') -OutputRoot $OutputRoot }
-  elseif ($OneFile) { & (Join-Path $PSScriptRoot 'build_exe.ps1') -OneFile }
+  if ($OneFile) { & (Join-Path $PSScriptRoot 'build_exe.ps1') -OneFile }
   else { & (Join-Path $PSScriptRoot 'build_exe.ps1') }
 
   if ($OneFile) {
     $artifact = Join-Path $root 'dist\CivitaiArtistDiscovery.exe'
     if (-not (Test-Path $artifact)) { throw 'Build did not produce an executable' }
   } else {
-    $folder = Join-Path $dist 'CivitaiArtistDiscovery'
+    $folder = Join-Path $root 'dist\CivitaiArtistDiscovery'
     if (-not (Test-Path $folder)) { throw 'Build did not produce an application folder' }
-    if (Test-Path -LiteralPath (Join-Path $folder 'data')) { throw 'Refusing to package runtime user data.' }
-    $artifact = Join-Path $dist "CivitaiArtistDiscovery-$version.zip"
+    $artifact = Join-Path $root "dist\CivitaiArtistDiscovery-$version.zip"
     if (Test-Path $artifact) { Remove-Item $artifact -Force }
     # Freshly written files are often still held briefly by the on-access scanner, so a
     # first attempt can fail on a file that is perfectly fine a second later.

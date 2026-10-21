@@ -1,4 +1,5 @@
 """Media preferences/chips/reset and card-focused keys work through the real API."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from datetime import datetime, timedelta
 import json
@@ -16,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 with tempfile.TemporaryDirectory(
-    prefix="media-keyboard-", ignore_cleanup_errors=True
+    prefix="cad3-media-keyboard-", ignore_cleanup_errors=True
 ) as temporary:
     os.environ["CIVITAI_HISTORY_DATA_DIR"] = temporary
     from discovery.history import HistoryArchive

@@ -1,5 +1,7 @@
 """Dashboard suggestions and gallery familiarity hearts use separate thresholds."""
 
+import test_safety  # Fail closed before any test network request.
+
 from datetime import datetime, timedelta
 import json
 import os
@@ -15,7 +17,7 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 PORT = 8900
-SHOTS = ROOT / "reports" / "worth-following"
+SHOTS = test_safety.REPORTS / "worth-following"
 SHOTS.mkdir(parents=True, exist_ok=True)
 
 with tempfile.TemporaryDirectory(prefix="civitai-worth-following-", ignore_cleanup_errors=True) as temporary:

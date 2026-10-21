@@ -1,4 +1,5 @@
 """An overnight tab discovers synced dates without reloading or changing galleries."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from datetime import date, timedelta
 from functools import partial

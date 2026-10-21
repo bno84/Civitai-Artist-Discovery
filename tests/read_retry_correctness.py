@@ -1,4 +1,5 @@
 """Transient tag/reaction failures stay errors; only safe reads may be replayed."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -108,7 +109,7 @@ for failure in [
         assert send.call_count == 3
 
 with tempfile.TemporaryDirectory(
-    prefix="retry-correctness-", ignore_cleanup_errors=True
+    prefix="cad3-retry-correctness-", ignore_cleanup_errors=True
 ) as temporary:
     os.environ["CIVITAI_HISTORY_DATA_DIR"] = temporary
     from discovery.taste import TasteStore
