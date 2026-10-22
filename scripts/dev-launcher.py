@@ -37,6 +37,16 @@ def read_json(url):
     with urllib.request.build_opener(NoRedirect()).open(url,timeout=5) as response:return json.load(response)
 
 
+def development_environment(data):
+    """Direct Python and PowerShell starts select the same preserved local ledger."""
+    env={**os.environ,'CIVITAI_HISTORY_DATA_DIR':str(data),'CAD_DEVELOPMENT':'1',
+         'CAD_COMMUNITY_TESTING':'0','CAD_COMMUNITY_MODE':os.environ.get('CAD_COMMUNITY_MODE') or 'fixture'}
+    sample=Path(data)/'sample.json'
+    if env['CAD_COMMUNITY_MODE']=='fixture' and not env.get('CAD_COMMUNITY_SAMPLE') and sample.is_file():
+        env['CAD_COMMUNITY_SAMPLE']=str(sample)
+    return env
+
+
 def owned_instance(data,port,*,listeners=None):
     if listeners is None:
         listeners=powershell(f"@(Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object LocalPort -eq {port} | Select-Object LocalAddress,OwningProcess) | ConvertTo-Json -Compress") or []
@@ -68,6 +78,7 @@ def main():
     parser.add_argument('--port',type=int,default=8907)
     parser.add_argument('--data-directory',type=Path)
     parser.add_argument('--no-browser',action='store_true')
+    parser.add_argument('--test-lab-connection',type=Path,help='Opt-in external connection file for the removable Community Test Lab')
     args=parser.parse_args()
     if not 0<args.port<65536 or args.port in (8906,33101,33201):raise RuntimeError('Use isolated port 8907 or another unoccupied development port.')
     for name in ('.git','server.py','discovery/community.py'):
@@ -86,6 +97,12 @@ def main():
         raise RuntimeError('The private environment requires Pillow 12.3.0+. Install the pinned requirements.')
     instance=owned_instance(data,args.port)
     if instance:
+        if args.test_lab_connection:
+            try:
+                registration=read_json(instance['url']+'/__dev/community-test-lab/registration')
+                if Path(registration['connectionFile']).resolve()!=args.test_lab_connection.resolve():raise ValueError()
+            except Exception:
+                raise RuntimeError('Close this verified development app through its Close app control, then relaunch with the requested Lab connection; no process was stopped.') from None
         wanted=os.environ.get('CAD_COMMUNITY_MODE','fixture')
         if instance.get('mode') and instance['mode']!=wanted:
             raise RuntimeError(f'This profile is already running in {instance["mode"]} mode. Close it through the app before selecting {wanted}; no process was stopped.')
@@ -98,11 +115,17 @@ def main():
         if type(pid) is not int or pid<=0:raise RuntimeError('Invalid existing instance record; inspect it before starting another copy.')
         if powershell(f'Get-CimInstance Win32_Process -Filter "ProcessId={pid}" | Select-Object ProcessId | ConvertTo-Json -Compress'):
             raise RuntimeError('This profile records another active process/port. Inspect its instance record; no competing copy was started.')
-    env={**os.environ,'CIVITAI_HISTORY_DATA_DIR':str(data),'CAD_DEVELOPMENT':'1','CAD_COMMUNITY_TESTING':'0'}
+    env=development_environment(data)
     env['PYTHONPATH']=os.pathsep.join(filter(None,(str(private/'Lib/site-packages'),env.get('PYTHONPATH'))))
     logs=Path(tempfile.mkdtemp(prefix='cad3-development-'))
     with (logs/'startup.log').open('w',encoding='utf-8') as output:
-        process=subprocess.Popen([info['base'],'-B',str(ROOT/'server.py'),'--host','127.0.0.1',
+        entry=[str(ROOT/'server.py')]
+        if args.test_lab_connection:
+            connection=args.test_lab_connection.resolve()
+            if ROOT in connection.parents or not connection.is_file():raise RuntimeError('Use an external live Lab connection file')
+            env['CAD_TEST_LAB_CONNECTION']=str(connection)
+            entry=[str(ROOT/'dev/community-test-lab/launch.py'),str(ROOT/'server.py')]
+        process=subprocess.Popen([info['base'],'-B',*entry,'--host','127.0.0.1',
             '--port',str(args.port),'--no-browser'],cwd=ROOT,env=env,stdout=output,stderr=subprocess.STDOUT,
             creationflags=HIDDEN,close_fds=True)
     deadline=time.monotonic()+25

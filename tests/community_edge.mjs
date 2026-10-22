@@ -2,14 +2,14 @@
 // Executes the real Edge handler with isolated upstream/DB transport fixtures.
 import assert from 'node:assert/strict';
 let handler, fault = '', calls = [], commits = [];
-globalThis.Deno = {env:{get:n=>({SUPABASE_URL:'https://test.supabase.co',SUPABASE_SERVICE_ROLE_KEY:'synthetic-server-only'}[n])},
+globalThis.Deno = {env:{get:n=>({SUPABASE_URL:'https://test.supabase.co',COMMUNITY_BETA_STATE:'enabled',COMMUNITY_ALLOWED_RATINGS:'1,2,4,8,16',SUPABASE_SERVICE_ROLE_KEY:'synthetic-server-only'}[n])},
   serve:fn=>{handler=fn;}};
 globalThis.fetch = async (url, options={}) => {
   calls.push({url, options});
   const response=(data,status=200)=>new Response(JSON.stringify(data),{status});
   if(url.includes('/rest/v1/rpc/')) {
     const name=url.split('/').at(-1), args=JSON.parse(options.body);
-    if(name==='community_take_rate') return fault==='rate-limited' ? response({message:'RATE_LIMITED'},400) : response(null);
+    if(name==='community_take_rate') return fault==='rate-limited' ? response({message:'RATE_LIMITED'},400) : new Response(null,{status:204});
     if(name==='community_quota') return response({used:0,remaining:3,limit:3});
     if(name==='community_submit' || name==='community_submit_once') {
       assert.equal(args.p_member,fault==='second-member'?8:7);assert.equal(args.p_creator,42);assert.equal(args.p_image,123);
@@ -72,4 +72,11 @@ fault='';
 result=await request({operation:'recommend',artwork:123,memberId:99,creatorId:88});
 assert.equal(result.body.code,'INVALID_REQUEST');
 result=await request({operation:'status'},'');assert.equal(result.status,401);
+for (const [body,type] of [['null','application/json'],
+    [JSON.stringify({apiVersion:1,operation:'status'}),'application/jsonjunk'],
+    [JSON.stringify({apiVersion:1,operation:'status',padding:'x'.repeat(9000)}),'application/json']]) {
+  const response=await handler(new Request('https://test.supabase.co/functions/v1/community-v1',{
+    method:'POST',headers:{Authorization:'Bearer synthetic-test-token','Content-Type':type},body}));
+  assert.equal(response.status,400);assert.equal((await response.json()).code,'INVALID_REQUEST');
+}
 console.log('PASS: Edge identity/owner authority, request routing, preview/commit, failures, URL rejection, fixed-host authenticated verification');

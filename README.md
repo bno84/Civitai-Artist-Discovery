@@ -1,5 +1,10 @@
 # Civitai Artist Discovery
 
+Community Beta release preparation is local and default-off. See the
+[readiness matrix, update channels and operating model](docs/3.0-beta-readiness.md)
+and the [unexecuted staging/rollback runbook](docs/3.0-staging-runbook.md).
+No shared Community service or public beta rollout is deployed.
+
 ## 3.0.0-dev — isolated Community Gallery development
 
 This clone's `3.0` branch adds an optional Community Gallery with a local SQLite
@@ -35,6 +40,11 @@ For the launcher, read-only diagnostics, smoke command, local CI and manual acce
 checklist, see [local development readiness](docs/3.0-local-readiness.md).
 
 See [the ten-member integration and stress workflow](docs/3.0-community-testing.md) for metadata sampling, shared-control regression tests, and the private validation report.
+
+The [local Community service and removable Test Lab](docs/3.0-local-community-service.md)
+add actual Deno/PostgREST/native PostgreSQL acceptance and ten isolated simulated
+members backed by 40 verified public Civitai artworks. The normal saved profile and
+SQLite ledger remain separate; no cloud service is deployed.
 
 The documentation below describes the existing Discovery features and release line.
 
