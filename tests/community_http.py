@@ -35,7 +35,7 @@ else:
     creators={};fault='';received=[];scenarios=[];public_active=False;public_artworks={};public_members={}
     flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
     def sql(statement):
-        child=subprocess.run(['psql','-X','-A','-t','-v','ON_ERROR_STOP=1','-c',statement],
+        child=subprocess.run(['psql','-X','-A','-t','-v','ON_ERROR_STOP=1'],input=statement+'\n',
             env=env,capture_output=True,text=True,encoding='utf-8',timeout=20,creationflags=flags)
         assert child.returncode==0,child.stderr
         return child.stdout.strip()
@@ -80,12 +80,13 @@ else:
                     data={'sub':claims['sub'],'id':int(claims['sub']),
                         'username':public_members[int(claims['sub'])]['username'] if public_active else 'SignedMember'+claims['sub']}
                 except Exception:status=401;data={}
-            elif fault in ('unavailable','limited','missing'):
-                status={'unavailable':503,'limited':429,'missing':404}[fault];data={}
+            elif fault in ('unavailable','limited','missing','private'):
+                status={'unavailable':503,'limited':429,'missing':404,'private':403}[fault];data={}
             else:
                 if path.path=='/api/v1/images':image=int(parse_qs(path.query)['imageId'][0])
                 else:image=json.loads(parse_qs(path.query)['input'][0])['json']['id']
                 creator=creators.get(image,image+100000)
+                if fault=='changed_owner':creator+=99999
                 if public_active:
                     art=public_artworks.get(image)
                     if not art:status=404;data={}
@@ -93,11 +94,11 @@ else:
                     else:data={'result':{'data':{'json':art['detail']}}}
                 elif path.path=='/api/v1/images':
                     data={'items':[{'id':image,'type':'video' if fault=='video' else 'image',
-                        'username':f'Artist{creator}','browsingLevel':1 if image%2 else 2,
+                        'username':f'Artist{creator}','browsingLevel':16 if fault=='rating' else 1 if image%2 else 2,
                         'url':'https://image.civitai.com/synthetic-local-only.jpeg'}]}
                 else:data={'result':{'data':{'json':{'id':image,'user':{'id':creator,'username':f'Artist{creator}'},
                     'availability':'Public','ingestion':'Scanned','needsReview':None,
-                    'publishedAt':'2026-01-01T00:00:00Z','nsfwLevel':1 if image%2 else 2}}}}
+                    'publishedAt':'2026-01-01T00:00:00Z','nsfwLevel':16 if fault=='rating' else 1 if image%2 else 2}}}}
             raw=json.dumps(data).encode();self.send_response(status);self.send_header('Content-Type','application/json')
             self.send_header('Content-Length',str(len(raw)));self.end_headers()
             try:self.wfile.write(raw)
@@ -115,20 +116,111 @@ else:
             try:request(url,{},method='POST');return
             except OSError:time.sleep(.1)
         raise RuntimeError('Owned service did not become ready')
-    def start_rest():
+    def start_rest(database_override=None,port_override=None,role='cad3_rest',password=None):
         return launch('postgrest',[env['CAD_TEST_POSTGREST']],{
-            'PGRST_DB_URI':f"postgresql://cad3_rest@127.0.0.1:{env['PGPORT']}/{env['PGDATABASE']}",
-            'PGPASSWORD':rest_password,'PGRST_DB_SCHEMAS':'public','PGRST_DB_ANON_ROLE':'anon',
-            'PGRST_JWT_SECRET':secret,'PGRST_SERVER_HOST':'127.0.0.1','PGRST_SERVER_PORT':str(rest_port),
+            'PGRST_DB_URI':f"postgresql://{role}@127.0.0.1:{env['PGPORT']}/{database_override or env['PGDATABASE']}",
+            'PGPASSWORD':password or rest_password,'PGRST_DB_SCHEMAS':'public','PGRST_DB_ANON_ROLE':'anon',
+            'PGRST_JWT_SECRET':secret,'PGRST_SERVER_HOST':'127.0.0.1','PGRST_SERVER_PORT':str(port_override or rest_port),
             'PGRST_DB_POOL':'4','PGRST_DB_POOL_ACQUISITION_TIMEOUT':'1','PGRST_LOG_LEVEL':'crit'})
-    def start_edge(live=False,state='enabled'):
+    def start_edge(live=False,state='enabled',private_beta=False,port_override=None,rest_override=None,registry_state='disabled',distributed_limit=False):
         return launch('deno',[env['CAD_TEST_DENO'],'run','--no-config','--no-lock','--no-prompt',
-            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS',
+            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS,COMMUNITY_OWNER_TEST_EXPIRES_AT,CAD_TEST_PRIVATE_BETA,DISCOVERY_REGISTRY_STATE,CAD_TEST_DISTRIBUTED_LIMIT',
             '--allow-net=127.0.0.1'+(',auth.civitai.com,civitai.red' if live else ''),str(ROOT/'supabase/tests/local_service.ts')],{
-            'SUPABASE_URL':rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,'COMMUNITY_BETA_STATE':state,'COMMUNITY_ALLOWED_RATINGS':'1,2,4,8,16',
-            'CAD_TEST_UPSTREAM_URL':f'http://127.0.0.1:{issuer.server_port}','CAD_TEST_EDGE_PORT':str(edge_port),
+            'SUPABASE_URL':rest_override or rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,'COMMUNITY_BETA_STATE':state,'COMMUNITY_ALLOWED_RATINGS':'1,2' if private_beta else '1,2,4,8,16',
+            # The shared handler reads this even outside owner-only mode. Pin an
+            # expired synthetic value; never inherit an interactive write window.
+            'COMMUNITY_OWNER_TEST_EXPIRES_AT':'2000-01-01T00:00:00Z',
+            'CAD_TEST_PRIVATE_BETA':'1' if private_beta else '0',
+            'DISCOVERY_REGISTRY_STATE':registry_state,
+            'CAD_TEST_DISTRIBUTED_LIMIT':'1' if distributed_limit else '0',
+            'CAD_TEST_UPSTREAM_URL':f'http://127.0.0.1:{issuer.server_port}','CAD_TEST_EDGE_PORT':str(port_override or edge_port),
             'CAD_TEST_LIVE_READONLY':'1' if live else '0',
             'DENO_NO_UPDATE_CHECK':'1','DENO_DIR':str(scratch/'deno-cache')})
+    def release_probe():
+        from community_release import run as release_run,backup_release
+        auth_url=None;registry_url=None
+        def api(role,name,body):
+            nonlocal auth_url
+            if auth_url is None:
+                password=secrets.token_urlsafe(40)
+                sql("create role authenticator login noinherit password '"+password+"';grant anon,authenticated,service_role to authenticator;grant connect on database "+env['PGDATABASE']+" to authenticator;")
+                hba=Path(env['CAD_TEST_PG_DATA_DIR'])/'pg_hba.conf';hba.write_text(f"host {env['PGDATABASE']} authenticator 127.0.0.1/32 scram-sha-256\n"+hba.read_text());sql('select pg_reload_conf();')
+                rest_test_port=port();auth_url=f'http://127.0.0.1:{rest_test_port}'
+                wait(auth_url,start_rest(port_override=rest_test_port,role='authenticator',password=password))
+            claims={'role':'service_role' if role=='service' else 'anon' if role=='anon' else 'authenticated','exp':int(time.time())+3600,
+                    'sub':'00000000-0000-0000-0000-000000000001' if role.startswith('operator') or role=='forged' else '00000000-0000-0000-0000-000000000002',
+                    'aal':'aal1' if role=='operator_aal1' else 'aal2'}
+            bearer='Bearer '+token(claims,'invalid-signature-key-not-authorized' if role=='forged' else secret)
+            if name.startswith('community_private.'):
+                payload=dict(body or {});method=payload.pop('__method','GET')
+                return request(auth_url+'/'+name.split('.')[1]+'?select=*&limit=1',payload if method!='GET' else None,
+                    method=method,auth=bearer,headers={'Accept-Profile':'community_private','Content-Profile':'community_private'})
+            return request(auth_url+'/rpc/'+name,body,auth=bearer)
+        def register(extra=None):
+            nonlocal registry_url
+            if registry_url is None:
+                registry_port=port();registry_url=f'http://127.0.0.1:{registry_port}'
+                wait(registry_url,start_edge(state='disabled',private_beta=True,port_override=registry_port,registry_state='enabled'))
+            bearer=token({'sub':'8800000000','exp':int(time.time())+3600,'iss':'local-test-only'},issuer_secret)
+            return request(registry_url,{'apiVersion':1,'operation':'register','appVersion':'3.0.0-beta.1','platform':'Linux',**(extra or {})},auth='Bearer '+bearer)[1]
+        result=release_run(sql=sql,env=env,output=output,api=api,register=register)
+        assert register().get('registered') is True
+        restore_token=token({'sub':'8800000000','exp':int(time.time())+3600,'iss':'local-test-only'},issuer_secret)
+        result['releaseRestore']=backup_release(sql=sql,env=env,output=output,restore_http=lambda db:restored_probe(db,restore_token))
+        urls=[]
+        for _ in range(2):
+            endpoint_port=port();url=f'http://127.0.0.1:{endpoint_port}';urls.append(url)
+            wait(url,start_edge(state='disabled',private_beta=True,port_override=endpoint_port,distributed_limit=True))
+        statuses=[]
+        for n in range(35):
+            bearer=token({'sub':str(8900000000+n),'exp':int(time.time())+3600,'iss':'local-test-only'},issuer_secret)
+            statuses.append(request(urls[n%2],{'apiVersion':1,'operation':'status'},auth='Bearer '+bearer)[0])
+        assert statuses==[200]*30+[429]*5,statuses
+        # Rejected RPCs roll back their attempted increment. The bucket records
+        # admitted calls, while the HTTP evidence records all 35 attempts.
+        assert sql("select requests=30 from community_rate_buckets where key='project:community';")=='t'
+        evidence={'passed':True,'instances':2,'requests':35,'accepted':30,'rateLimited':5,'billedInvocationCap':False,'newCommunityRecords':0}
+        (output/'distributed-limit.json').write_text(json.dumps(evidence,indent=2));result['distributedLimit']=evidence
+        return result
+    def legacy_probe(owner,owner_token):
+        legacy_dir=scratch/'legacy-v10';legacy_dir.mkdir(exist_ok=True)
+        # Immutable regression source, never packaged/deployed; no private Git ancestry.
+        old=(ROOT/'tests/fixtures/community-legacy-handler.ts').read_bytes().replace(b'\r\n',b'\n')
+        digest=hashlib.sha256(old).hexdigest()
+        # The reviewed hosted download used CRLF; this Git blob uses LF. Their
+        # canonical bytes were compared, and both immutable digests are recorded.
+        assert digest=='f879ae189551dfed71649002c9b6f4708c4e07a6e6b0e55272d94c31c3d898eb','Pinned v10 source mismatch'
+        (legacy_dir/'handler.ts').write_bytes(old)
+        launcher=(ROOT/'supabase/tests/local_service.ts').read_text().replace("../functions/community-v1/handler.ts","./handler.ts").replace("invitationOnly:Deno.env.get('CAD_TEST_PRIVATE_BETA')==='1'","ownerOnly:true")
+        (legacy_dir/'serve.ts').write_text(launcher)
+        legacy_port=port();url=f'http://127.0.0.1:{legacy_port}'
+        proc=launch('legacy-v10',[env['CAD_TEST_DENO'],'run','--no-config','--no-lock','--no-prompt',
+            '--allow-env=SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEYS,CAD_TEST_UPSTREAM_URL,CAD_TEST_EDGE_PORT,CAD_TEST_LIVE_READONLY,COMMUNITY_BETA_STATE,COMMUNITY_ALLOWED_RATINGS,COMMUNITY_TEST_OWNER_ID,COMMUNITY_OWNER_TEST_EXPIRES_AT,CAD_TEST_DISTRIBUTED_LIMIT',
+            '--allow-net=127.0.0.1',str(legacy_dir/'serve.ts')],{
+            'SUPABASE_URL':rest,'SUPABASE_SERVICE_ROLE_KEY':service_key,'CAD_TEST_UPSTREAM_URL':f'http://127.0.0.1:{issuer.server_port}',
+            'CAD_TEST_EDGE_PORT':str(legacy_port),'CAD_TEST_LIVE_READONLY':'0','COMMUNITY_BETA_STATE':'read_only',
+            'COMMUNITY_TEST_OWNER_ID':str(owner),'COMMUNITY_OWNER_TEST_EXPIRES_AT':'2000-01-01T00:00:00Z','COMMUNITY_ALLOWED_RATINGS':'1,2'})
+        wait(url,proc)
+        status,value=request(url,{'apiVersion':1,'operation':'gallery'},auth='Bearer '+owner_token)
+        proc.terminate();proc.wait(timeout=10)
+        return {'status':status,'code':value.get('code'),'pinnedVersion10HandlerSha256':digest,
+            'reviewedHostedCrlfSha256':'30708e456dac1929e30fc0deabc44703126777a063075e557952fcd4877430a5','separateEndpoint':True}
+    def restored_probe(database,owner_token):
+        rest_test_port,edge_test_port=port(),port()
+        sql('grant connect on database '+database+' to cad3_rest;')
+        hba=Path(env['CAD_TEST_PG_DATA_DIR'])/'pg_hba.conf'
+        hba.write_text(f"host {database} cad3_rest 127.0.0.1/32 scram-sha-256\n"+hba.read_text());sql('select pg_reload_conf();')
+        rest_url=f'http://127.0.0.1:{rest_test_port}';edge_url=f'http://127.0.0.1:{edge_test_port}'
+        rest_proc=start_rest(database_override=database,port_override=rest_test_port);wait(rest_url,rest_proc)
+        edge_proc=start_edge(state='disabled',private_beta=True,port_override=edge_test_port,rest_override=rest_url);wait(edge_url,edge_proc)
+        status,_=request(edge_url,{'apiVersion':1,'operation':'status'},auth='Bearer '+owner_token)
+        _,denial=request(edge_url,{'apiVersion':1,'operation':'recommend','artwork':0},auth='Bearer '+owner_token)
+        broken=scratch/'broken-rollout.ts';broken.write_text("throw new Error('Synthetic failed rollout');")
+        failed=launch('failed-rollout',[env['CAD_TEST_DENO'],'run','--no-config','--no-lock',str(broken)],{})
+        failed.wait(timeout=20)
+        after,_=request(edge_url,{'apiVersion':1,'operation':'status'},auth='Bearer '+owner_token)
+        edge_proc.terminate();edge_proc.wait(timeout=10);rest_proc.terminate();rest_proc.wait(timeout=10)
+        return {'status':status,'recommendCode':denial.get('code'),'failedRolloutExited':failed.returncode!=0,'statusAfterFailedRollout':after}
     def call(operation='status',n=0,**fields):
         result=request(edge,{'apiVersion':1,'operation':operation,**fields},auth='Bearer '+member(n))
         received.append(result);return result
@@ -155,6 +247,22 @@ else:
         sql('select pg_reload_conf();')
         rest_process=start_rest();wait(rest,rest_process)
         edge_process=start_edge();wait(edge,edge_process)
+        if env.get('CAD_TEST_BETA_ONLY')=='1':
+            from community_private_beta import run as run_beta
+            def beta_restart_fast(state):
+                global edge_process
+                edge_process.terminate();edge_process.wait(timeout=10)
+                edge_process=start_edge(state=state,private_beta=True);wait(edge,edge_process)
+            def beta_fault_fast(value):
+                global fault
+                fault=value
+            def second_instance():
+                second_port=port();process=start_edge(private_beta=True,port_override=second_port)
+                url=f'http://127.0.0.1:{second_port}';wait(url,process);return url
+            beta_result=run_beta(second_instance=second_instance,legacy_probe=legacy_probe,restored_probe=restored_probe,release_probe=release_probe,sql=sql,call=call,request=request,edge=edge,member=member,
+                restart=beta_restart_fast,set_fault=beta_fault_fast,env=env,output=output,seed=seed)
+            (output/'summary.json').write_text(json.dumps({'passed':True,'privateBeta':beta_result,'baselineHttpSkipped':True},indent=2))
+            raise SystemExit(0)
         initial=call()
         if initial[0]!=200:
             req=urllib.request.Request(rest+'/rpc/community_take_rate',data=b'{"p_key":"http-diagnostic"}',
@@ -186,6 +294,35 @@ else:
             status,_=request(rest+'/rpc/community_submit',{'p_member':seed,'p_name':'Spoof','p_image':seed+20000,'p_creator':seed+20001},auth=('Bearer '+jwt) if jwt else None)
             assert status in (401,403)
             status,_=request(rest+'/community_recommendations',auth=('Bearer '+jwt) if jwt else None,method='GET');assert status in (401,403)
+        denied_requests=0
+        public_jwt=token({'role':'anon','exp':int(time.time())+3600},secret)
+        for jwt in (None,public_jwt,anon_key):
+            headers={'apikey':'synthetic-public-api-key'}
+            auth='Bearer '+jwt if jwt else None
+            for table in ('community_members','community_recommendations','community_audit','community_rate_buckets','community_submission_requests'):
+                for method,body in (('GET',None),('POST',{}),('PATCH',{}),('DELETE',None)):
+                    status,_=request(rest+'/'+table,body,auth=auth,headers=headers,method=method)
+                    assert status in (401,403),(table,method,status)
+                    denied_requests+=1
+            for name,body in (
+                ('community_quota',{'p_member':seed}),('community_gallery',{}),
+                ('community_take_rate',{'p_key':'forged-client'}),
+                ('community_submit',{'p_member':seed,'p_name':'Spoof','p_image':seed+20000,'p_creator':seed+20001}),
+                ('community_submit_once',{'p_member':seed,'p_name':'Spoof','p_image':seed+20000,'p_creator':seed+20001,'p_key':'forged-client-key'}),
+                ('community_withdraw',{'p_member':seed,'p_image':seed+20000}),
+                ('community_moderate',{'p_image':seed+20000,'p_status':'hidden'})):
+                status,_=request(rest+'/rpc/'+name,body,auth=auth,headers=headers)
+                assert status in (401,403,404),(name,status)
+                denied_requests+=1
+        scenarios.append({'scenario':'public-client-all-table-and-rpc-denials','requests':denied_requests,'persisted':0})
+        lost={'apiVersion':1,'operation':'recommend','artwork':seed+29000,'idempotencyKey':f'http-lost-reply-{seed}'}
+        before_lost=counts()
+        status,_=request(edge,lost,auth='Bearer '+member(990),headers={'X-CAD-Test-Lost-Reply':'1'})
+        assert status==503
+        committed=counts();assert committed['recommendations']==before_lost['recommendations']+1
+        status,retry=request(edge,lost,auth='Bearer '+member(990))
+        assert status==200 and retry.get('replayed') is True and counts()==committed
+        scenarios.append({'scenario':'committed-but-response-lost-retry','persisted':1,'retryAddedRecords':0})
         # Actual PostgREST role switch + RLS, rather than only SQL ACL rejection.
         sql('grant select,insert on community_recommendations to authenticated; grant usage on sequence community_recommendations_seq_seq to authenticated;')
         try:
@@ -267,7 +404,11 @@ else:
         sys.path.insert(0,str(ROOT/'tests'))
         from community_http_gallery import run_gallery
         (output/'progress.json').write_text(json.dumps({'stage':'Shared gallery browser'}))
-        gallery=run_gallery(edge,member,seed,creators,sql,scratch,output,lambda:edge_process,lambda:start_edge())
+        def restart_gallery_service():
+            global edge_process
+            edge_process=start_edge()
+            return edge_process
+        gallery=run_gallery(edge,member,seed,creators,sql,scratch,output,lambda:edge_process,restart_gallery_service)
         live_result=None
         if env.get('CAD_TEST_LIVE_READONLY')=='1':
             processes[-1].terminate();processes[-1].wait(timeout=10)
@@ -339,11 +480,26 @@ else:
                 if not manual_ready:lab.close();public_active=False
         # Persisted records always have a matching accepted audit; no duplicates/overcaps.
         sql(f"do $$ begin assert not exists(select 1 from community_recommendations r left join community_audit a on a.image_id=r.image_id and a.action='accepted' where member_id between {seed} and {seed+999} group by r.image_id having count(a.seq)<>1); assert not exists(select 1 from community_recommendations where member_id between {seed} and {seed+999} group by member_id,week having count(*)>3); end $$;")
+        beta_result=None
+        if env.get('CAD_TEST_BETA_ACCEPTANCE')=='1':
+            from community_private_beta import run as run_beta
+            def beta_restart(state):
+                global edge_process
+                edge_process.terminate();edge_process.wait(timeout=10)
+                edge_process=start_edge(state=state,private_beta=True);wait(edge,edge_process)
+            def beta_fault(value):
+                global fault
+                fault=value
+            def second_instance():
+                second_port=port();process=start_edge(private_beta=True,port_override=second_port)
+                url=f'http://127.0.0.1:{second_port}';wait(url,process);return url
+            beta_result=run_beta(second_instance=second_instance,legacy_probe=legacy_probe,restored_probe=restored_probe,release_probe=release_probe,sql=sql,call=call,request=request,edge=edge,member=member,
+                restart=beta_restart,set_fault=beta_fault,env=env,output=output,seed=seed)
         summary={'passed':True,'runtime':'Deno','realPostgREST':True,'realPostgreSQL':True,
             'syntheticSignedUserInfo':True,'syntheticArtworkMetadata':True,'scenarios':scenarios,'counts':http_counts,
             'httpResponsesRecorded':len(received),'gallery':gallery,'postgresInterruptedAndRecovered':True,
             'dumpRestoreCompared':True,'httpRlsAfterTemporaryGrant':True,'liveHandler':live_result,
-            'realFixtureLab':real_lab,'deployedSupabase':False}
+            'realFixtureLab':real_lab,'privateBeta':beta_result,'deployedSupabase':False}
         (output/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary),flush=True)
         if env.get('CAD_TEST_MANUAL_LAB')=='1':
             print('Removable manual Test Lab ready; private connection file: '+str(lab.state),flush=True)

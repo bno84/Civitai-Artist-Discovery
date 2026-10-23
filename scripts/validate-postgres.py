@@ -19,15 +19,24 @@ def main():
     parser.add_argument('--bin', required=True, type=Path, help='Verified PostgreSQL bin directory')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--repeats', type=int, default=5)
+    parser.add_argument('--private-beta',action='store_true',help='Apply candidate only to owned HTTP test DB')
     parser.add_argument('--http-deno', type=Path, help='Verified native Deno for real HTTP integration')
     parser.add_argument('--http-postgrest', type=Path, help='Verified native PostgREST for real HTTP integration')
     parser.add_argument('--http-live-readonly', action='store_true', help='Bounded live UserInfo/artwork preview using the selected protected session')
     parser.add_argument('--manual-test-lab',action='store_true',help='Keep the owned local service and removable Test Lab running after validation')
+    parser.add_argument('--beta-only',action='store_true',help='Fast owned beta iteration, skips baseline HTTP scenarios')
+    parser.add_argument('--deployment-rehearsal',action='store_true',help='Owned interruption/operator/backup/recovery rehearsal')
+    parser.add_argument('--release-candidate',action='store_true',help='Registry/owner-administration migrations and signed API role tests')
     args = parser.parse_args()
+    if args.deployment_rehearsal and not args.private_beta:parser.error('--deployment-rehearsal requires --private-beta')
+    if args.release_candidate and not args.private_beta:parser.error('--release-candidate requires --private-beta')
+    if args.release_candidate and not args.deployment_rehearsal:parser.error('--release-candidate requires --deployment-rehearsal')
+    if args.beta_only and not args.private_beta:parser.error('--beta-only requires --private-beta')
     if bool(args.http_deno) != bool(args.http_postgrest):
         parser.error('Supply both HTTP runtime paths')
     if (args.manual_test_lab or args.http_live_readonly) and not args.http_deno:
         parser.error('Manual Lab and live preview require both HTTP runtime paths')
+    if args.private_beta and not args.http_deno:parser.error('Private beta tests require HTTP runtimes')
     if not 1 <= args.repeats <= 20:
         parser.error('Use 1..20 repetitions')
     binary = args.bin.resolve()
@@ -42,8 +51,6 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     password = secrets.token_urlsafe(32)
     role_passwords = {name: secrets.token_urlsafe(32) for name in ('anon', 'authenticated', 'service_role')}
-    pwfile = cluster / 'init-password'
-    pwfile.write_text(password, encoding='utf-8')
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0)); port = probe.getsockname()[1]
     database = 'cad3_security_' + secrets.token_hex(6)
@@ -81,8 +88,10 @@ def main():
     try:
         summary['version'] = require(command('psql', '--version'), 'Version check')
         require(command('initdb', '-D', str(cluster/'data'), '--username=cad3_admin',
-                        '--auth=scram-sha-256', '--pwfile='+str(pwfile), '--encoding=UTF8', '--locale=C'), 'initdb')
-        pwfile.unlink()
+                        '--auth=scram-sha-256', '--pwprompt', '--encoding=UTF8', '--locale=C',
+                        input=password+'\n'+password+'\n',
+                        child_env={**env, **({'OSTYPE':'msys'} if os.name=='nt' else {})}), 'initdb')
+        summary['plaintextCredentialFilesCreated'] = False
         config = cluster/'data/postgresql.conf'
         with config.open('a', encoding='utf-8') as stream:
             stream.write("\nlisten_addresses='127.0.0.1'\nport="+str(port)+
@@ -105,6 +114,22 @@ def main():
         assert bad.returncode != 0 and 'password authentication failed' in bad.stderr
         summary['wrongPasswordRejected'] = True
         migrations = sorted((ROOT/'supabase/migrations').glob('*.sql'))
+        # Rehearse the proposed all-or-nothing bootstrap in a second empty DB
+        # inside this same owned cluster. No persistent profile or host is used.
+        atomic_database=database+'_atomic'
+        require(sql(f'create database {atomic_database}; revoke connect on database {atomic_database} from public;'),'Atomic bootstrap database')
+        atomic_env={**env,'PGDATABASE':atomic_database}
+        require(sql('begin;\n'+'\n'.join(m.read_text() for m in migrations)+'\ncommit;',child_env=atomic_env),'Ordered atomic bootstrap')
+        inventory_sql=(ROOT/'supabase/tests/security_inventory.sql').read_text()
+        atomic_inventory=json.loads(require(sql(inventory_sql,child_env=atomic_env),'Atomic inventory'))
+        assert len(atomic_inventory['relations'])==5 and len(atomic_inventory['rpcs'])==7
+        assert all(t['rlsEnabled'] for t in atomic_inventory['relations'])
+        if args.private_beta:
+            require(sql('create role community_operator nologin noinherit nobypassrls;',child_env=atomic_env),'Restricted operator group')
+            candidate=(ROOT/'supabase/beta-migrations/202610230001_private_beta_security.sql').read_text()
+            require(sql('begin;\n'+candidate+'\ncommit;',child_env=atomic_env),'Candidate atomic bootstrap rehearsal')
+            summary['privateBetaAtomicBootstrapPassed']=True
+        summary['orderedAtomicBootstrapPassed']=True
         summary['migrations'] = []
         for migration in migrations:
             if migration.name == '202610210001_community_rpc_guards.sql':
@@ -137,6 +162,11 @@ def main():
         plans=command('psql','-X','-v','ON_ERROR_STOP=1','-f',str(ROOT/'supabase/tests/query_plans.sql'))
         (output/'query-plans.log').write_text(require(plans,'Rolled-back synthetic query plans'),encoding='utf-8')
         summary['syntheticQueryPlansPassed']=True
+        inventory=require(command('psql','-X','-A','-t','-v','ON_ERROR_STOP=1','-f',str(ROOT/'supabase/tests/security_inventory.sql')),'Security inventory')
+        (output/'privilege-matrix.json').write_text(json.dumps(json.loads(inventory),indent=2),encoding='utf-8')
+        guard=migrations[-1]
+        require(command('psql','-X','-v','ON_ERROR_STOP=1','--single-transaction','-f',str(guard)),'Replay guard reapplication')
+        summary['replayGuardReapplied']=True
         save()
         for index in range(args.repeats):
             start = time.monotonic()
@@ -171,6 +201,10 @@ def main():
             summary['handlerPersistedState']=json.loads(counts)
             assert summary['handlerPersistedState']=={'recommendations':12,'audits':12,'replayKeys':12}
         if args.http_deno:
+            env['CAD_TEST_BETA_ACCEPTANCE']='1' if args.private_beta else '0'
+            env['CAD_TEST_BETA_ONLY']='1' if args.beta_only else '0'
+            env['CAD_TEST_REHEARSAL']='1' if args.deployment_rehearsal else '0'
+            env['CAD_TEST_RELEASE']='1' if args.release_candidate else '0'
             env.update(CAD_ALLOW_LOCAL_HTTP_TESTS='1',CAD_TEST_DENO=str(args.http_deno.resolve()),
                        CAD_TEST_POSTGREST=str(args.http_postgrest.resolve()),CAD_TEST_HTTP_OUTPUT=str(output/'http'))
             if args.http_live_readonly:env['CAD_TEST_LIVE_READONLY']='1'
@@ -183,7 +217,6 @@ def main():
         summary['extensions'] = require(sql('select extname from pg_extension order by extname;'), 'Extensions').splitlines()
         summary['passed'] = True
     finally:
-        if pwfile.exists(): pwfile.unlink()
         if started or (cluster/'data/postmaster.pid').exists():
             stop = command('pg_ctl','-D',str(cluster/'data'),'-m','fast','-w','stop')
             summary['stoppedOwnedCluster'] = stop.returncode == 0

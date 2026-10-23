@@ -15,6 +15,30 @@ from discovery.community import CommunityClient, ContentProfile, FixtureVerifier
 
 
 class AdmissionTests(unittest.TestCase):
+    def test_remote_feed_never_masks_revocation_with_cached_success(self):
+        from discovery.community import CommunityError
+        backend=Mock();backend.request.return_value={'apiVersion':1,'items':[]}
+        client=CommunityClient(backend,None,lambda:'synthetic-fresh',lambda token:None)
+        client.mode='supabase';client.identity_provider=lambda:42
+        client.store=Mock()
+        client._read('gallery',None,{'refresh':True})
+        backend.request.assert_called_once_with('gallery','synthetic-fresh',{})
+        client.store.get.assert_not_called()
+        backend.request.side_effect=CommunityError('FORBIDDEN',403)
+        with self.assertRaises(CommunityError):client._read('gallery',None,{})
+        client.store.get.assert_not_called()
+
+    def test_report_forwards_only_verified_transport_and_minimal_payload(self):
+        from discovery.community import CommunityError
+        backend=Mock();backend.request.return_value={'apiVersion':1,'reported':True}
+        client=CommunityClient(backend,None,lambda:'synthetic-fresh-credential',lambda token:self.fail('Report fetched unrelated content preferences'))
+        client.mode='supabase'
+        client.request('report',{'artwork':1001,'reason':'abuse','memberId':999})
+        backend.request.assert_called_once_with('report','synthetic-fresh-credential',{'artwork':1001,'reason':'abuse'})
+        with self.assertRaises(CommunityError):client.request('report',{'artwork':1001,'reason':'free text'})
+        client.mode='fixture'
+        with self.assertRaises(CommunityError):client.request('report',{'artwork':1001,'reason':'abuse'})
+
     def setUp(self):
         self.verifier = FixtureVerifier(development=True)
         self.profile = ContentProfile(levels=frozenset((1,2,4,8,16)))
@@ -97,6 +121,41 @@ class AdmissionTests(unittest.TestCase):
                 self.assertEqual(1, archive._request.call_count)
                 self.assertEqual(640, self.client.store.get('fixture:detail:1001')['value']['width'])
             archive._upsert_normalized.assert_not_called()
+
+    def test_details_preserve_nested_generation_metadata(self):
+        from discovery.civitai import normalize
+        raw={'id':1001,'username':self.art.username,'baseModel':'Pony','width':640,'height':800,
+             'meta':{'id':1001,'meta':{'prompt':'Synthetic complete prompt',
+                     'negativePrompt':'Synthetic negative',
+                     'resources':[{'name':'Synthetic model','type':'checkpoint'}]}}}
+        detail=normalize(raw)
+        self.assertEqual('Synthetic complete prompt',detail['prompt'])
+        self.assertEqual('Synthetic negative',detail['negativePrompt'])
+        self.assertEqual('Pony',detail['baseModel'])
+        self.assertEqual('Synthetic model',detail['resources'][0]['name'])
+        missing=normalize({'id':1001})
+        self.assertEqual('',missing['prompt'])
+        self.assertEqual([],missing['resources'])
+
+    def test_detail_failures_do_not_cache_missing_or_wrong_owner(self):
+        from discovery.community import CommunityError
+        from discovery.cache import MetadataCache
+        with tempfile.TemporaryDirectory(prefix='data-test-shared-detail-') as temporary:
+            os.environ['CIVITAI_HISTORY_DATA_DIR']=temporary
+            import server
+            self.client.store=MetadataCache(Path(temporary)/'metadata.sqlite3')
+            archive=Mock()
+            with patch.object(server,'image_store',return_value=None),patch.object(server,'HISTORY',archive), \
+                    patch('discovery.community_dev.test_identity',return_value=None):
+                for rows in ([],[{'id':1001,'username':'WrongOwner'}]):
+                    archive._request.return_value=({'items':rows},None)
+                    with self.assertRaises(CommunityError):
+                        server.community_detail_metadata(self.client,self.art.browser())
+                    self.assertIsNone(self.client.store.get('fixture:detail:1001'))
+                archive._request.side_effect=TimeoutError('Synthetic outage')
+                with self.assertRaises(TimeoutError):
+                    server.community_detail_metadata(self.client,self.art.browser())
+                self.assertIsNone(self.client.store.get('fixture:detail:1001'))
 
 
 if __name__ == '__main__': unittest.main()

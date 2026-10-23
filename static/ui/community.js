@@ -18,31 +18,59 @@ export function mountCommunity() {
   dialog.innerHTML = `<h2 id="communityDialogTitle">Recommend Art</h2><form id="communityForm"><p class="community-rules">Recommend someone else's public artwork. Each member can recommend three artworks per week; each artist can be featured three times. Resets Monday at 00:00 UTC.</p><p id="communityFormQuota"></p><label for="communityLink">Civitai artwork URL or image ID</label><div class="community-input"><input id="communityLink" maxlength="512" autocomplete="off" placeholder="https://civitai.red/images/12345" aria-describedby="communityDialogMessage" required autofocus></div><p id="communityDialogMessage" role="status" aria-live="polite"></p><div class="loading-actions"><button id="communitySubmit" type="submit" class="primary-button">Submit Recommendation</button><button id="communityCancel" type="button">Close</button></div></form>`;
   document.body.append(dialog);
   bindDialog(dialog, {labelledBy:'communityDialogTitle', closeButtons:[dialog.querySelector('#communityCancel')]});
+  const reportDialog=document.createElement('dialog');reportDialog.className='community-dialog';
+  reportDialog.innerHTML='<h2 id="communityReportTitle">Report recommendation</h2><form id="communityReportForm"><label>Reason <select id="communityReportReason"><option value="inappropriate">Inappropriate content</option><option value="abuse">Abuse</option><option value="ownership">Ownership concern</option><option value="unavailable">Artwork unavailable</option></select></label><p id="communityReportMessage" role="status"></p><button type="submit" id="communityReportSubmit">Send report</button><button type="button" id="communityReportClose">Cancel</button></form>';
+  document.body.append(reportDialog);
+  bindDialog(reportDialog,{labelledBy:'communityReportTitle',closeButtons:[reportDialog.querySelector('#communityReportClose')]});
   const el = id => document.getElementById(id);
-  let productionBeta=false, submissions=true;
+  let productionBeta=false, policyControlled=true, submissions=false;
+  let reporting=false,reportTarget=null,reportBusy=false;
+  el('communityRecommend').disabled=true;
+  el('communitySubmit').disabled=true;
   function applyPolicy(status) {
-    if(!productionBeta)return;
+    reporting=status?.beta?.reporting===true && status?.cache?.state!=='stale';
+    section.querySelectorAll('.community-report').forEach(button=>{button.hidden=!reporting;});
+    if(!reporting&&reportDialog.open)reportDialog.close();
+    if(status?.beta)policyControlled=true;
+    if(!policyControlled)return;
     submissions=status?.beta?.submissions===true && status?.cache?.state!=='stale';
     el('communityRecommend').disabled=!submissions;
-    if(!submissions)message('Community Beta is read-only. Your personal galleries still work.');
+    el('communitySubmit').disabled=busy||!submissions;
+    if(!submissions&&dialog.open)dialog.close();
+    if(!submissions)message(status?.beta?.available ? 'Community Beta is read-only. Your personal galleries still work.' : 'Community Beta is temporarily disabled or under maintenance. Your Daily Gallery still works.');
   }
   async function configureBeta() {
     const beta=await api('/api/community/beta');productionBeta=beta.production===true;
-    tab.hidden=productionBeta&&!beta.enabled;tab.classList.toggle('hidden',tab.hidden);
+    policyControlled=productionBeta||beta.serverPolicy===true;
+    tab.hidden=false;tab.classList.remove('hidden');
+    if(!policyControlled){submissions=true;el('communityRecommend').disabled=false;el('communitySubmit').disabled=false;}
     if(!productionBeta)return;
     tab.textContent='Community Beta';submissions=false;el('communityRecommend').disabled=true;
     const label=document.createElement('label');label.className='community-rules';
     const check=document.createElement('input');check.type='checkbox';check.checked=beta.optedIn;check.disabled=!beta.available;
     label.append(check,document.createTextNode(beta.available?' Opt in to Community Beta':' Community Beta is not available yet.'));
     document.getElementById('discovery').append(label);
-    check.onchange=async()=>{check.disabled=true;try{const result=await api('/api/community/beta',{method:'POST',body:JSON.stringify({optedIn:check.checked})});tab.hidden=!result.enabled;tab.classList.toggle('hidden',tab.hidden);if(!result.enabled){invalidate();document.getElementById('tabGallery').click();}}catch(error){check.checked=!check.checked;}finally{check.disabled=false;}};
+    check.onchange=async()=>{check.disabled=true;try{const result=await api('/api/community/beta',{method:'POST',body:JSON.stringify({optedIn:check.checked})});if(!result.enabled){invalidate();document.getElementById('tabGallery').click();}}catch(error){check.checked=!check.checked;}finally{check.disabled=false;}};
   }
-  configureBeta().catch(()=>{tab.hidden=true;tab.classList.add('hidden');});
+  configureBeta().catch(()=>{tab.hidden=false;tab.classList.remove('hidden');});
   const message = value => { el('communityMessage').setAttribute('role','status'); el('communityMessage').textContent = value; };
+  function accessError(error) {
+    applyPolicy(null);
+    const states={
+      INVITE_ONLY:"Community Beta is Invite Only\nWe're currently testing Community with a small group of invited Civitai members. Your account isn't on the invitation list yet. You can continue using the Daily Gallery normally.",
+      INVITE_REVOKED:'Your Community Beta invitation was revoked. Your Daily Gallery still works.',
+      INVITE_EXPIRED:'Your Community Beta invitation expired. Your Daily Gallery still works.',
+      SUBMITTER_BLOCKED:'This account is blocked from Community participation. Contact the beta owner for review.',
+      BETA_DISABLED:'Community Beta is temporarily disabled or under maintenance. Your Daily Gallery still works.',
+      UNAVAILABLE:'Community is temporarily unavailable. Please retry later. Your Daily Gallery still works.',
+      AUTH_REQUIRED:'Sign in to Civitai to use Community.',AUTH_EXPIRED:'Please sign in to Civitai again.',
+    };
+    message(states[error.code]||error.message);
+  }
   let cursor = null, generation = 0, busy = false, draftVersion = 0, requestKey = null, requestValue = null;
   const quota = value => { if (value) {
     el('communityQuota').textContent = `${value.remaining} left this week`;
-    el('communityFormQuota').textContent = `${value.used} of ${value.limit} recommendations used this week · ${value.remaining} remaining`;
+    el('communityFormQuota').textContent = `${value.used} of ${value.limit} recommendations used this week Â· ${value.remaining} remaining`;
   } };
   let initialized = false, firstPage = true, refreshPage = false, metadataTimer = null, metadataRetries = 0, viewSession = null;
   const requestedCursors = new Set();
@@ -51,7 +79,7 @@ export function mountCommunity() {
     visible:()=>authorized && !section.classList.contains('hidden'),
     hasMore:()=>!initialized || firstPage || !!cursor,
     load:fetchPage,
-    onError:()=>message(''),
+    onError:accessError,
   });
   const artists = new Map(), recommendations = new Map();
   function clearCards() {
@@ -82,7 +110,14 @@ export function mountCommunity() {
         },
       });
       card.classList.add('community-card');
-      card.append(credit); artists.set(key, card); el('communityGrid').append(card);
+      const reportButton=document.createElement('button');reportButton.type='button';
+      reportButton.className='community-report';reportButton.textContent='Report recommendation';reportButton.hidden=!reporting;
+      reportButton.onclick=()=>{
+        if(!reporting||reportBusy)return;
+        reportTarget=card.dataset.id;el('communityReportMessage').textContent='Reports are reviewed by a moderator. Reporting does not remove artwork.';
+        reportDialog.showModal();
+      };
+      card.append(credit,reportButton); artists.set(key, card); el('communityGrid').append(card);
       addedArtists.push(artist); addedCards.push(card);
     }
     window.DiscoveryGallery.enrichCards(addedArtists, addedCards);
@@ -98,6 +133,7 @@ export function mountCommunity() {
   async function fetchPage({signal}) {
     const id = generation, first = firstPage, pageCursor = cursor;
     const clearSkeleton = first ? showGallerySkeleton(el('communityGrid')) : ()=>{};
+    if(first)applyPolicy(null);
     if (first) message('Loading community recommendations\u2026');
     try {
       if (first) {
@@ -142,17 +178,17 @@ export function mountCommunity() {
       // A restarted server has a new volatile artwork admission list. Refresh the
       // projection then; ordinary tab switches still keep their pages and scroll.
       if (viewSession && status.viewSession && viewSession !== status.viewSession) return load();
-    } catch (error) { applyPolicy(null);if (id === generation) message(error.message); }
+    } catch (error) { if (id === generation) accessError(error); }
   }
   function deactivate() {
     ++generation; clearTimeout(metadataTimer); pages.pause();
   }
   function invalidate() {
     deactivate(); initialized = false; cursor = null; firstPage = true;
-    ++draftVersion; clearCards(); dialog.close();
+    ++draftVersion; clearCards(); dialog.close();reportDialog.close();reporting=false;reportTarget=null;
   }
   function recommend(value = '') {
-    if (busy || !authorized || (productionBeta&&!submissions)) return;
+    if (busy || !authorized || !submissions) return;
     ++draftVersion;
     el('communityLink').value = String(value);
     el('communityDialogMessage').textContent = '';
@@ -162,7 +198,7 @@ export function mountCommunity() {
   }
   el('communityForm').onsubmit = async event => {
     event.preventDefault();
-    if (busy) return;
+    if (busy || !authorized || !submissions) return;
     const value = el('communityLink').value.trim(), version = draftVersion;
     if (requestValue !== value || !requestKey) { requestKey = crypto.randomUUID(); requestValue = value; }
     busy = true;
@@ -182,7 +218,7 @@ export function mountCommunity() {
       el('communityDialogMessage').textContent = error.message;
       api('/api/community/status').then(result => quota(result.quota)).catch(() => {});
     } finally {
-      busy = false; el('communitySubmit').disabled = false; el('communityLink').readOnly = false;
+      busy = false; el('communitySubmit').disabled = !submissions; el('communityLink').readOnly = false;
       el('communitySubmit').textContent = 'Submit Recommendation'; el('communityForm').removeAttribute('aria-busy');
     }
   };
@@ -220,6 +256,15 @@ export function mountCommunity() {
     else { invalidate(); section.classList.add('hidden'); }
   });
   el('communityRecommend').onclick = () => recommend();
+  el('communityReportForm').onsubmit=async event=>{
+    event.preventDefault();if(!reporting||reportBusy||!reportTarget)return;
+    reportBusy=true;el('communityReportSubmit').disabled=true;
+    try {
+      await api('/api/community/report',{method:'POST',body:JSON.stringify({artwork:reportTarget,reason:el('communityReportReason').value})});
+      el('communityReportMessage').textContent='Report received. Thank you.';
+    } catch(error) {el('communityReportMessage').textContent=error.message;}
+    finally {reportBusy=false;el('communityReportSubmit').disabled=false;}
+  };
   el('communityRefresh').onclick = () => { metadataRetries = 0; load(false, true); };
   // A settings/account change invalidates all rendered previews and the pending draft.
   window.addEventListener('community-controls-changed', () => {
@@ -228,5 +273,5 @@ export function mountCommunity() {
   });
   window.addEventListener('content-controls-changing', invalidate);
   window.CivitaiCommunity = Object.freeze({load, recommend, activate, deactivate});
-  setInterval(()=>{if(productionBeta&&authorized&&!section.classList.contains('hidden'))activate();},60000);
+  setInterval(()=>{if(policyControlled&&authorized&&!section.classList.contains('hidden'))activate();},60000);
 }

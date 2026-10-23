@@ -32,7 +32,7 @@ def snapshot(root):
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--package',required=True,type=Path);parser.add_argument('--output',required=True,type=Path);parser.add_argument('--upgrade-profile',type=Path)
     args=parser.parse_args();package=args.package.resolve();output=args.output.resolve();output.mkdir(parents=True,exist_ok=True)
-    executable=package/'CivitaiArtistDiscovery.exe';archive=CArchiveReader(str(executable));pyz=archive.open_embedded_archive('PYZ.pyz')
+    executable=package/'CivitaiDiscoveryBeta.exe';archive=CArchiveReader(str(executable));pyz=archive.open_embedded_archive('PYZ.pyz')
     forbidden=[name for name in pyz.toc if name.startswith(('dev.','tests.')) or name in ('discovery.community_dev','discovery.community_fixtures','lab','actor')]
     assert not forbidden,forbidden
     # Inspect our actual frozen code constants/filenames, not just archive names.
@@ -49,7 +49,7 @@ def main():
     assert not code_findings,sorted(set(code_findings))
     paths=[str(p.relative_to(package)) for p in package.rglob('*') if p.is_file()]
     assert not any(any(x in name.lower() for x in ('community-test-lab','public-fixtures','postgres','oauth_tokens','reports/')) or name.endswith(('.sqlite3','.dpapi','.env')) for name in paths)
-    result={'archiveInspected':True,'excludedModulesAbsent':True,'applicationCodePatternFindings':code_findings,'pythonModules':len(pyz.toc),'packageFiles':len(paths),'executableSha256':hashlib.sha256(executable.read_bytes()).hexdigest(),'profiles':[],'limitations':['No hosted endpoint configured; enabled beta and real OAuth consent need staging/dedicated account.','Copied upgrade data excludes all OAuth credentials.']}
+    result={'archiveInspected':True,'excludedModulesAbsent':True,'applicationCodePatternFindings':code_findings,'pythonModules':len(pyz.toc),'packageFiles':len(paths),'executableSha256':hashlib.sha256(executable.read_bytes()).hexdigest(),'profiles':[],'limitations':['Configured staging remains disabled; enabled Community and real OAuth require separate live acceptance.','Copied upgrade data excludes all OAuth credentials.']}
     scratch=Path(tempfile.mkdtemp(prefix='cad3-production-acceptance-'))
     for scenario in ('fresh','upgrade','hostile-environment'):
         profile=scratch/scenario;profile.mkdir()
@@ -83,9 +83,10 @@ def main():
             else:raise RuntimeError('Frozen package did not become ready')
             for path in ('/api/development/diagnostics','/api/test-isolation','/api/community/development/member','/__dev/community-test-lab/entry.js','/community-fixture.svg'):
                 assert request(path)[0]==404,(scenario,path)
-            beta=request('/api/community/beta')[1];assert beta['production'] and not beta['enabled'] and not beta['available']
+            beta=request('/api/community/beta')[1];assert beta['production'] and beta['available']
+            assert beta['enabled'] is (scenario=='hostile-environment'), 'Only the explicitly seeded local preference enables Community'
             assert request('/api/community/recommend',{'artwork':123})[0] in (401,403)
-            assert request('/api/community/beta',{'optedIn':True})[0] in (400,403)
+            assert request('/api/community/beta',{'optedIn':True})[0]==200
             assert request('/api/community/beta',{'optedIn':False})[0]==200
             assert request('/api/auth-status')[1]['connected'] is False
             with sync_playwright() as pw:
@@ -98,14 +99,14 @@ def main():
                 page.route('**/api/auth-status',lambda route:route.fulfill(json={'connected':True,'id':700,'username':'UI simulation only','socialWrite':False}))
                 page.route('**/api/discovery/summary',lambda route:route.fulfill(json={'hasData':False,'lastSyncAt':'2099-01-01T00:00:00Z'}))
                 page.reload(wait_until='networkidle');assert page.locator('#tabGallery').is_visible()
-                assert page.locator('#tabCommunity').is_hidden()
+                assert page.locator('#tabCommunity').is_visible()
                 assert request('/api/community/recommend',{'artwork':123})[0] in (401,403)
                 page.screenshot(path=str(output/(scenario+'-ui-simulated-auth.png')))
                 page.screenshot(path=str(output/(scenario+'.png')));browser.close()
             assert request('/api/app/close',{})[1]['closing'];process.wait(timeout=15)
             after=snapshot(profile)
             assert all(after.get(k)==v for k,v in before.items()),'Upgrade record changes'
-            result['profiles'].append({'scenario':scenario,'passed':True,'preservedCriticalTables':len(before),'noOAuthCredentialsCopied':True,'developerRoutes404':True,'betaDefaultOff':True,'localOptInDeniedUntilRollout':True,'oauthWelcomeRendered':True,'browserOnlyFakeIdentityCannotSubmit':True})
+            result['profiles'].append({'scenario':scenario,'passed':True,'preservedCriticalTables':len(before),'noOAuthCredentialsCopied':True,'developerRoutes404':True,'betaDefaultOff':scenario!='hostile-environment','localPreferenceHonored':True,'localOptInSupported':True,'communityTabVisible':True,'oauthWelcomeRendered':True,'browserOnlyFakeIdentityCannotSubmit':True})
         finally:
             if process.poll() is None:process.terminate();process.wait(timeout=10)
     result['passed']=True;result['scratch']=str(scratch)

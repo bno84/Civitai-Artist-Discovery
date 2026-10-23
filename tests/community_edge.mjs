@@ -2,7 +2,7 @@
 // Executes the real Edge handler with isolated upstream/DB transport fixtures.
 import assert from 'node:assert/strict';
 let handler, fault = '', calls = [], commits = [];
-globalThis.Deno = {env:{get:n=>({SUPABASE_URL:'https://test.supabase.co',COMMUNITY_BETA_STATE:'enabled',COMMUNITY_ALLOWED_RATINGS:'1,2,4,8,16',SUPABASE_SERVICE_ROLE_KEY:'synthetic-server-only'}[n])},
+globalThis.Deno = {env:{get:n=>({SUPABASE_URL:'https://test.supabase.co',COMMUNITY_BETA_STATE:'owner_test',COMMUNITY_TEST_OWNER_ID:'7',COMMUNITY_OWNER_TEST_EXPIRES_AT:new Date(Date.now()+20*60*1000).toISOString(),COMMUNITY_ALLOWED_RATINGS:'1,2,4,8,16',SUPABASE_SERVICE_ROLE_KEY:'synthetic-server-only'}[n])},
   serve:fn=>{handler=fn;}};
 globalThis.fetch = async (url, options={}) => {
   calls.push({url, options});
@@ -34,7 +34,9 @@ globalThis.fetch = async (url, options={}) => {
     publishedAt:fault==='future'?'2999-01-01T00:00:00Z':'2026-01-01T00:00:00Z',nsfwLevel:fault==='rating-mismatch'?1:8}}}});
   throw Error('Unexpected network destination');
 };
-await import('../supabase/functions/community-v1/index.ts');
+// Retained bounded-owner contract; invitation entry point has separate tests.
+const {createCommunityHandler}=await import('../supabase/functions/community-v1/handler.ts');
+handler=createCommunityHandler({ownerOnly:true});
 async function request(body, token='synthetic-test-token') {
   const response=await handler(new Request('https://test.supabase.co/functions/v1/community-v1',{
     method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},
@@ -65,9 +67,10 @@ for(const [scenario,code] of [['expired','AUTH_EXPIRED'],['revoked','AUTH_EXPIRE
 }
 fault='';
 fault='second-member';
-assert.equal((await request({operation:'status'})).body.member.id,8);
-assert.equal((await request({operation:'recommend',artwork:123})).status,200);
-assert.equal(commits.at(-1).p_member,8);
+const beforeOtherMember=commits.length;
+assert.equal((await request({operation:'status'})).body.code,'FORBIDDEN');
+assert.equal((await request({operation:'recommend',artwork:123})).body.code,'FORBIDDEN');
+assert.equal(commits.length,beforeOtherMember);
 fault='';
 result=await request({operation:'recommend',artwork:123,memberId:99,creatorId:88});
 assert.equal(result.body.code,'INVALID_REQUEST');

@@ -18,11 +18,17 @@ const transport:typeof fetch=(input,options)=>{
 };
 // A shortened ingress window keeps bounded stress tests fast. SQL member/token
 // counters and the production concurrency/body/timeout defaults are unchanged.
-const handler=createCommunityHandler({fetch:transport,ipLimit:200,ipWindowMs:1000});
+const handler=createCommunityHandler({fetch:transport,ipLimit:200,ipWindowMs:1000,
+  invitationOnly:Deno.env.get('CAD_TEST_PRIVATE_BETA')==='1',distributedLimit:Deno.env.get('CAD_TEST_DISTRIBUTED_LIMIT')==='1'});
 Deno.serve({hostname:'127.0.0.1',port,onListen:()=>{}},async(request,info)=>{
   if(live) {
     const body=await request.clone().json().catch(()=>null);
     if(!body || !['status','verify'].includes(body.operation)) return new Response('{}',{status:403});
   }
-  return handler(request,info);
+  const response=await handler(request,info);
+  // Owned local fault injection: SQL commits, then the client gets no success
+  // representation. Never deployed; proves explicit same-key recovery over HTTP.
+  if(request.headers.get('X-CAD-Test-Lost-Reply')==='1' && response.ok)
+    return Response.json({code:'UNAVAILABLE'},{status:503});
+  return response;
 });
