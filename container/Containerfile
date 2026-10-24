@@ -1,0 +1,23 @@
+# Run-from-source image for desktop Linux. It keeps Python and the app's dependencies
+# off the host; it is not a hosted or multi-user deployment. compose.yaml runs it with
+# host networking (the OAuth redirect targets localhost:8765) and the desktop's D-Bus
+# session (Secret Service for credentials, the OpenURI portal for the browser).
+FROM docker.io/library/python:3.14-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    BROWSER=/app/container/open_url.py
+
+WORKDIR /app
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
+
+COPY server.py ./
+COPY discovery/ discovery/
+COPY static/ static/
+COPY --chmod=755 container/open_url.py container/
+
+# Data lives in the folder compose.yaml mounts and names in CIVITAI_HISTORY_DATA_DIR
+# (data-dev-3.0/ beside the checkout). No VOLUME here: an anonymous volume would hide a
+# missing mount instead of failing, and would outlive the container.
+ENTRYPOINT ["python", "/app/server.py"]
