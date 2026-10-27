@@ -25,6 +25,9 @@ services:
       DBUS_SESSION_BUS_ADDRESS: unix:path=/run/host-bus
       HOME: /tmp
       CIVITAI_OAUTH_CLIENT_ID: ${CIVITAI_OAUTH_CLIENT_ID:-}
+      # Source launches default to a local Community backend; use the hosted beta.
+      CAD_COMMUNITY_MODE: supabase
+      CAD_COMMUNITY_URL: https://aibelmhucizupzvvhdvf.supabase.co/functions/v1/community-v1
       # The same folder a 3.0 source launch uses; never the 2.x data/ folder.
       CIVITAI_HISTORY_DATA_DIR: /app/data-dev-3.0
     volumes:
