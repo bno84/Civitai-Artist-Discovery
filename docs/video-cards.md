@@ -24,10 +24,8 @@ carousel rather than in a separate tab.
   `type: "image"`. Civitai rejects `"video"`. Hidden-tag filtering therefore covers
   videos with no changes.
 - **Card artwork.** A video card shows a still frame and autoplays, muted, once at least
-  half of it has been on screen for 300 ms. Scrolling it away pauses playback immediately.
-  Recently played cards retain their player and decoded frame briefly, as described below;
-  videos still loading are released immediately. Navigating the carousel or removing a
-  card releases its player and aborts the download. The ▶/❚❚ button pauses a card
+  half of it has been on screen for 300 ms. Scrolling it away, navigating the carousel, or
+  removing the card stops playback and aborts the download. The ▶/❚❚ button pauses a card
   until it leaves the screen. Cards also pause while the details dialog is open, while the
   tab is hidden, and when the user prefers reduced motion (▶ still plays on request).
 - **Autoplay cost (Sep 13, Edge).**
@@ -37,49 +35,13 @@ carousel rather than in a separate tab.
   - Reading-pace scrolling costs about 2 MB per video card passed. With the testing boost
     every card is a video, which came to 70–105 MB over 18 seconds. Without it, about 1 in
     13 cards opens on a video (303 of 3,948), so the same scroll would be roughly 7 MB.
-- **Details dialog.** Plays the larger file with native controls and the saved sound preference.
+- **Details dialog.** Plays the larger file with controls, starting muted.
 - **Time Machine.** It keeps its own per-creator store and had always collected the
   videos its listing returned, but stored no type and served every row as an image, so a
   card handed its MP4 to an `<img>` and showed nothing but alt text. `creator_images` now
   carries `type`, set from the listing, and reuses the still and playback transforms
   below. Existing stores are classified by file extension on first open — 2,109 of 90,179
   rows locally — rather than refetching every creator's back catalogue.
-
-## Brief video retention
-
-Returning to a played card used to create a new video element and fetch its source again,
-even after a very short scroll or details visit. Card players now pause immediately and
-retain their existing source for up to **30 seconds**, with **no player-count cap**.
-The whole recently viewed grid can resume without evicting each other's buffers, including
-wide layouts and details visits that pause ten or more visible videos at once. Repeated
-visibility events do not extend a player's deadline; resuming and later leaving again
-starts a new retention visit.
-
-Only players with observed playback progress, a complete buffered timeline, and an idle
-network state qualify. Partially downloaded videos are released even if playback has
-started. Pausing and setting `preload="none"` does not abort an existing request: keeping
-such streams can occupy the browser's connections and delay newly visible videos.
-This also applies when opening details. Fast scrolling
-still respects the 300 ms settle delay, and a video that has not played is released when
-it leaves view. A retained frame stays visible while the player is paused or waiting for
-the settle delay, so a failed still poster does not flash an unavailable overlay on it.
-
-Opening details pauses and retains qualifying card players within these same bounds.
-Closing details resumes eligible cards on their existing elements. The separate details
-player is still released on close. If a retained source has errored or was discarded by
-the browser, a new player restores the saved position without consuming recovery retries.
-
-Source changes, carousel navigation, card removal, hidden application views, a hidden
-browser document, page exit, and content-control invalidation release players immediately.
-No retained buffer survives those invalidations. User pause and reduced-motion behavior
-are unchanged, and this feature adds no disk cache, database state, or new autoplay limit.
-
-Retention bounds lifetime, not player count or exact memory. The browser may still
-discard buffered data. Tests use a local MP4 served with `Cache-Control:
-no-store` to verify that a buffered card reuses its element with no additional media request
-after scrolling or a short details visit. Expiry permits a fresh request. This does not
-guarantee zero requests on every browser. Incomplete videos deliberately reload on return
-so that offscreen transfers cannot hold up the current viewport.
 
 ## Seen tracking
 
