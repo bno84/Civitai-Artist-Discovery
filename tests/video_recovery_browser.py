@@ -32,7 +32,7 @@ body{margin:0} #host{position:relative;width:320px;height:240px}video{width:320p
 dialog{width:340px;height:300px} [hidden]{display:none!important}
 </style></head><body><div id="host"></div><dialog id="details"><img id="detailImage"></dialog>
 <script type="module">
-import {createMediaLifecycle, VIDEO_POLICY, attachCardVideo, showDetailVideo, clearDetailVideo, refreshVideoEligibility} from '/ui/video.js';
+import {createMediaLifecycle, createVideoRetentionPool, VIDEO_POLICY, attachCardVideo, showDetailVideo, clearDetailVideo, refreshVideoEligibility, suspendCardVideos} from '/ui/video.js';
 import {showVideoPoster, showArtwork} from '/ui/artwork.js';
 window.states=[];window.mounts=0;window.errors=[];window.waiting=[];window.mountedVideos=[];
 const policy={...VIDEO_POLICY,tickMs:100,indicatorMs:200,idleMs:1600,progressLimitMs:4000,backoffMs:[300,500],recoverySpacingMs:0};
@@ -45,17 +45,18 @@ window.startFixture=(mode)=>{
  window.player.setItem({id:mode,source:location.origin+'/media/'+mode+'.mp4'});window.player.start();
 };
 window.stopFixture=()=>window.player?.release();
-window.makeCard=()=>{
- window.stopFixture();document.getElementById('host').replaceChildren();
+window.makeCard=(mode='card',options={})=>{
+ window.stopFixture();window.card?.releaseVideo();document.getElementById('host').replaceChildren();
  const el=document.createElement('article');el.className='creator-card';el.dataset.imagesActive='1';el.setAttribute('aria-busy','false');
  el.innerHTML='<div class="image-stage"><button class="image-button"><img></button></div>';
  document.getElementById('host').append(el);window.card=el;const img=el.querySelector('img');
- const show=attachCardVideo(el,img);window.paintVideo=show;
- show({id:'card',type:'video',videoUrl:location.origin+'/media/card.mp4'});
+ const show=attachCardVideo(el,img,options);window.paintVideo=show;
+ show({id:mode,type:'video',videoUrl:location.origin+'/media/'+mode+'.mp4'});
  showVideoPoster(img,{id:'card',url:'original',thumbnailCandidates:[location.origin+'/missing.png',location.origin+'/poster.png']});
  el.setVideoVisible(true);
 };
 window.showPoster=showVideoPoster;window.showImage=showArtwork;window.showDetail=showDetailVideo;window.clearDetail=clearDetailVideo;window.refreshVideos=refreshVideoEligibility;
+window.makeRetention=createVideoRetentionPool;window.suspendCards=suspendCardVideos;
 window.ready=true;
 </script></body></html>"""
 
@@ -223,6 +224,89 @@ try:
             assert page.locator(".card-video").count() == 0
             page.evaluate("card.releaseVideo();card.remove()")
 
+            # A decoded, fully buffered no-store stream survives actual scroll-back.
+            # This proves player/buffer reuse without relying on the HTTP cache.
+            page.emulate_media(reduced_motion="no-preference")
+            path = f'/media/retained-{name}.mp4'
+            page.evaluate("""mode => {
+                const spacer=document.createElement('div');spacer.id='scroll-space';spacer.style.height='1600px';
+                document.body.append(spacer);window.scrollTo(0,0);makeCard(mode);
+            }""", f'retained-{name}')
+            page.wait_for_function("""() => {
+                const v=document.querySelector('.card-video');
+                return v?.currentTime>1.2 && v.buffered.length && v.buffered.end(v.buffered.length-1)>=v.duration-0.1;
+            }""")
+            media_before = requests[path]
+            page.evaluate("""() => {
+                window.retainedVideo=document.querySelector('.card-video');
+                card.querySelector('.image-stage').classList.add('video-preview-unavailable');
+                window.scrollTo(0,900);
+            }""")
+            page.wait_for_function("card.dataset.videoState==='parked'")
+            parked_time = page.evaluate('retainedVideo.currentTime')
+            page.wait_for_timeout(400)
+            assert page.evaluate('retainedVideo.paused && !retainedVideo.hidden && retainedVideo.isConnected')
+            assert abs(page.evaluate('retainedVideo.currentTime') - parked_time) < .1
+            assert page.evaluate("getComputedStyle(card.querySelector('.image-stage'),'::after').display==='none'")
+            page.evaluate('window.scrollTo(0,0)')
+            page.wait_for_function('retainedVideo.currentTime>' + str(parked_time + .25))
+            assert page.evaluate("document.querySelector('.card-video')===retainedVideo")
+            assert requests[path] == media_before, dict(requests)
+
+            # Opening details parks the cards; closing it reuses the same card player.
+            page.evaluate("""() => {
+                suspendCards(true);document.querySelector('#details').showModal();
+                showDetail(document.querySelector('#detailImage'),location.origin+'/media/retention-details.mp4','retention-details');
+            }""")
+            page.wait_for_function("card.dataset.videoState==='parked' && document.querySelector('#detailVideo').currentTime>.25")
+            assert page.evaluate('retainedVideo.paused && retainedVideo.isConnected')
+            parked_time = page.evaluate('retainedVideo.currentTime')
+            page.evaluate("clearDetail();document.querySelector('#details').close();suspendCards(false)")
+            page.wait_for_function('retainedVideo.currentTime>' + str(parked_time + .25))
+            assert page.evaluate("document.querySelector('.card-video')===retainedVideo")
+            assert requests[path] == media_before, dict(requests)
+
+            # Filter invalidation, hidden views, and a hidden document immediately purge buffers.
+            for invalidation in ('controls', 'view', 'document'):
+                if invalidation != 'controls':
+                    page.evaluate('mode => makeCard(mode)', f'invalidation-{invalidation}-{name}')
+                    page.wait_for_function("document.querySelector('.card-video')?.currentTime>1.2")
+                page.evaluate('window.oldCardVideo=document.querySelector(".card-video");window.scrollTo(0,900)')
+                page.wait_for_function("card.dataset.videoState==='parked'")
+                if invalidation == 'controls':
+                    page.evaluate("window.dispatchEvent(new Event('content-controls-changing'))")
+                elif invalidation == 'view':
+                    page.evaluate("card.classList.add('hidden');refreshVideos()")
+                else:
+                    page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'))")
+                assert page.evaluate('!oldCardVideo.isConnected && !oldCardVideo.getAttribute("src")')
+                page.evaluate("""() => {
+                    card.releaseVideo();card.remove();delete document.hidden;
+                    window.dispatchEvent(new Event('community-controls-changed'));window.scrollTo(0,0);
+                }""")
+
+            # Expiry permits a fresh request and restores the position on one new player.
+            path = f'/media/expiry-{name}.mp4'
+            page.evaluate("mode => makeCard(mode,{retention:makeRetention({ttlMs:800})})", f'expiry-{name}')
+            page.wait_for_function("document.querySelector('.card-video')?.currentTime>1.2")
+            media_before = requests[path]
+            page.evaluate('window.expiredVideo=document.querySelector(".card-video");window.scrollTo(0,900)')
+            page.wait_for_function("card.dataset.videoState==='parked'")
+            page.wait_for_function('!expiredVideo.isConnected')
+            page.evaluate('window.scrollTo(0,0)')
+            page.wait_for_function("document.querySelector('.card-video')?.currentTime>1.5")
+            assert page.evaluate("document.querySelector('.card-video')!==expiredVideo")
+            assert requests[path] > media_before, dict(requests)
+            page.evaluate('card.releaseVideo();card.remove()')
+
+            # A flick that never satisfies the settle delay creates no media request.
+            path = f'/media/flick-{name}.mp4'
+            page.evaluate("mode => {makeCard(mode);window.scrollTo(0,900)}", f'flick-{name}')
+            page.wait_for_timeout(600)
+            assert requests[path] == 0, dict(requests)
+            assert page.locator('.card-video').count() == 0
+            page.evaluate("card.releaseVideo();card.remove();document.querySelector('#scroll-space').remove();window.scrollTo(0,0)")
+
             # Closing a real native dialog retires its media, including deferred restoration.
             page.evaluate("""() => {
                 const d=document.querySelector('#details');d.showModal();
@@ -260,4 +344,6 @@ finally:
 
 print(json.dumps({"browsers": tested, "nativePlayback": True, "slowWithoutReload": True,
                   "naturalRecovery": True, "midPlaybackRecovery": True,
+                  "scrollAndDetailReuseWithoutNewRequests": True, "retentionExpiry": True,
+                  "retentionInvalidation": True, "fastFlickWithoutRequests": True,
                   "posterOnlyNeverLoadsVideo": True, "nativeDetailsCleaned": True}))

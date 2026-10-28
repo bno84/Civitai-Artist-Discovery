@@ -3,7 +3,7 @@ globalThis.matchMedia = () => ({matches:false, addEventListener(){}});
 globalThis.document = new EventTarget();
 globalThis.window = new EventTarget();
 globalThis.IntersectionObserver = class { observe(){} unobserve(){} };
-const {createMediaLifecycle, VIDEO_POLICY} = await import('../../static/ui/video.js');
+const {createMediaLifecycle, createVideoRetentionPool, VIDEO_POLICY} = await import('../../static/ui/video.js');
 
 class Clock {
   time=0; next=0; tasks=new Map();
@@ -28,17 +28,17 @@ class Video extends EventTarget {
   play(){this.plays=(this.plays||0)+1;this.paused=false;this.dispatchEvent(new Event('play'));return this.pending || (this.playError?Promise.reject(this.playError):Promise.resolve())}
   pause(){this.paused=true;this.dispatchEvent(new Event('pause'))}
   removeAttribute(name){if(name==='src')this.src=''}
-  load(){}
+  load(){this.loads=(this.loads||0)+1}
   remove(){this.removed=true}
 }
-function fixture({card=true,muted,budget=new Map(),make=()=>new Video(),clock=new Clock(),reserve=at=>at}={}){
+function fixture({card=true,muted,budget=new Map(),make=()=>new Video(),clock=new Clock(),reserve=at=>at,retention=null}={}){
   const videos=[],renders=[],events=[];
   let eligible=true,online=true;
-  const controller=createMediaLifecycle({card,...(muted===undefined ? {} : {muted}),clock,budget,policy:VIDEO_POLICY,...(reserve ? {reserve} : {}),
+  const controller=createMediaLifecycle({card,retention,...(muted===undefined ? {} : {muted}),clock,budget,policy:VIDEO_POLICY,...(reserve ? {reserve} : {}),
     createVideo:()=>{const v=make();videos.push(v);return v},mount(){},
     eligible:()=>eligible,online:()=>online,render:v=>renders.push(v),diagnose:(...args)=>events.push(args)});
   controller.setItem({id:'1',source:'https://image.civitai.com/fixture.mp4'});
-  return {controller,clock,videos,renders,events,setEligible:v=>eligible=v,setOnline:v=>online=v};
+  return {controller,clock,budget,videos,renders,events,setEligible:v=>eligible=v,setOnline:v=>online=v};
 }
 
 // Initial timeout: one card reload, then a manual action. Never overlapping old sources.
@@ -160,3 +160,95 @@ for(const name of ['NotAllowedError','NotSupportedError']){
  v.play();await f.clock.advance(1000);assert.equal(f.videos.length,1);f.controller.release();
 }
 console.log('video lifecycle: slow loads, natural recovery, true stalls, budgets, restoration, cancellation and native controls passed');
+
+async function played(f) {
+ f.controller.start();const v=f.videos.at(-1);v.readyState=3;v.buffer=20;v.currentTime=8;
+ await f.clock.advance(1000);return v;
+}
+// Brief absence retains the decoded frame and source, ignoring queued media events.
+{
+ const clock=new Clock(),retention=createVideoRetentionPool({clock});
+ const f=fixture({clock,retention});const v=await played(f),source=v.src;
+ f.setEligible(false);assert(f.controller.park());assert(v.paused);
+ for(const event of ['progress','canplay','playing','play','error'])v.dispatchEvent(new Event(event));
+ await clock.advance(5000);assert.equal(f.controller.state,'parked');assert.equal(v.src,source);
+ f.setEligible(true);f.controller.start();await clock.advance(0);
+ assert.equal(f.controller.video,v);assert.equal(f.videos.length,1);assert.equal(v.loads||0,0);
+ assert.equal(f.controller.state,'playing');assert.equal(retention.size,0);assert.equal(f.budget.size,0);
+ assert.equal(clock.tasks.size,1); // Exactly one watchdog, with no parked expiry left.
+ await clock.advance(15000);assert.equal(f.controller.state,'recovering');
+ await clock.advance(3000);assert.equal(f.videos.length,2);f.controller.release();
+}
+// Repeated refreshes do not extend the deadline; eviction preserves resume position.
+{
+ const clock=new Clock(),retention=createVideoRetentionPool({clock});
+ const f=fixture({clock,retention});const v=await played(f);
+ f.setEligible(false);f.controller.park();await clock.advance(VIDEO_POLICY.parkedMs-1);
+ f.controller.park();v.currentTime=0;await clock.advance(1);
+ assert.equal(v.src,'');assert(v.removed);assert.equal(retention.size,0);
+ f.setEligible(true);f.controller.start();const next=f.videos.at(-1);
+ next.readyState=3;next.dispatchEvent(new Event('loadedmetadata'));
+ assert.equal(next.currentTime,8);assert.equal(f.budget.size,0);f.controller.release();
+}
+// The oldest parked scope is evicted first; resume and re-park makes it recent again.
+{
+ const clock=new Clock(),retention=createVideoRetentionPool({clock,maxEntries:2});
+ const fixtures=[];
+ for(let i=0;i<3;i++){
+  const f=fixture({clock,retention});await played(f);f.setEligible(false);f.controller.park();fixtures.push(f);
+ }
+ assert.equal(retention.size,2);assert.equal(fixtures[0].videos[0].src,'');
+ const recent=fixtures[1];recent.setEligible(true);recent.controller.start();
+ recent.setEligible(false);recent.controller.park();
+ const fourth=fixture({clock,retention});await played(fourth);fourth.setEligible(false);fourth.controller.park();fixtures.push(fourth);
+ assert.equal(fixtures[2].videos[0].src,'');assert(recent.videos[0].src);
+ retention.clear();assert.equal(retention.size,0);
+ for(const f of fixtures){assert.equal(f.videos[0].src,'');f.controller.release()}
+}
+// Starting downloads and detail players cannot be retained by the card-only path.
+for(const card of [true,false]){
+ const clock=new Clock(),retention=createVideoRetentionPool({clock});const f=fixture({clock,retention,card});
+ f.controller.start();assert.equal(f.controller.park(),false);f.controller.cancel('offscreen');
+ assert.equal(retention.size,0);assert.equal(f.videos[0].src,'');f.controller.release();
+}
+// An errored/discarded parked source starts fresh without using recovery attempts.
+for(const failure of ['error','discarded']){
+ const clock=new Clock(),retention=createVideoRetentionPool({clock});const f=fixture({clock,retention});
+ const v=await played(f);f.setEligible(false);f.controller.park();
+ if(failure==='error')v.error={code:2};else v.networkState=3;
+ v.currentTime=0;
+ v.dispatchEvent(new Event('error'));assert.equal(f.controller.state,'parked');
+ f.setEligible(true);f.controller.start();assert.equal(f.videos.length,2);assert.equal(v.src,'');
+ assert.equal(f.budget.size,0);assert.equal(f.events.length,0);
+ const next=f.videos.at(-1);next.readyState=3;next.dispatchEvent(new Event('loadedmetadata'));
+ assert.equal(next.currentTime,8);f.controller.release();
+}
+// Parking neither spends nor resets a recovery budget already used by this item.
+{
+ const clock=new Clock(),retention=createVideoRetentionPool({clock});const f=fixture({clock,retention});
+ f.controller.start();await clock.advance(18000);assert.equal(f.videos.length,2);
+ const v=f.videos[1];v.readyState=3;v.buffer=20;v.currentTime=8;await clock.advance(1000);
+ f.setEligible(false);f.controller.park();f.setEligible(true);f.controller.start();await clock.advance(15000);
+ assert.equal(f.controller.state,'failed');assert.equal(f.videos.length,2);assert.equal(f.budget.get('1'),1);
+ f.controller.release();
+}
+// Every hard invalidation still releases retained scopes and their expiry timers.
+for(const action of ['navigation','hidden','removed','source-change','item-change']){
+ const clock=new Clock(),retention=createVideoRetentionPool({clock});const f=fixture({clock,retention});
+ const v=await played(f);f.setEligible(false);f.controller.park();
+ if(action==='removed')f.controller.release();
+ else if(action==='source-change')f.controller.setItem({id:'1',source:'different.mp4'});
+ else if(action==='item-change')f.controller.setItem({id:'2',source:v.src});
+ else f.controller.cancel(action);
+ assert.equal(v.src,'');assert.equal(retention.size,0);
+ for(const event of ['playing','play','canplay','error'])v.dispatchEvent(new Event(event));
+ await clock.advance(60000);assert.equal(f.videos.length,1);assert(v.paused);f.controller.release();
+}
+// A pending play promise cannot restart playback or render 'playing' after parking.
+{
+ let resolve;const clock=new Clock(),retention=createVideoRetentionPool({clock});
+ const f=fixture({clock,retention,make:()=>{const v=new Video();v.pending=new Promise(r=>resolve=r);return v}});
+ const v=await played(f);f.setEligible(false);f.controller.park();resolve();await clock.advance(0);
+ assert.equal(f.controller.state,'parked');assert(v.paused);assert(v.src);f.controller.release();
+}
+console.log('video retention: reuse, bounded expiry/LRU, queued events, budgets and hard invalidation passed');
