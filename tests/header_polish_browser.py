@@ -26,7 +26,7 @@ try:
    for tab in ('tabCommunity','tabGallery','tabTimeMachine','tabDiscovery'):
     assert page.locator('#'+tab+' svg.ui-icon[aria-hidden="true"]').count()==1
    sizes=page.locator('.view-tabs > button > svg').evaluate_all('(xs)=>xs.map(x=>[getComputedStyle(x).width,getComputedStyle(x).height])')
-   assert len(sizes)==4 and len({tuple(x) for x in sizes})==1,sizes
+   assert len(sizes)==5 and len({tuple(x) for x in sizes})==1,sizes
    page.locator('#tabGallery').click()
    assert page.locator('#tabGallery').get_attribute('aria-pressed')=='true'
    page.locator('#tabCommunity').click()
