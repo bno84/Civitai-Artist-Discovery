@@ -32,6 +32,7 @@ from discovery.capture import AutoCapture
 from discovery.archive_calendar import build_request as archive_build_request
 from discovery.availability import ArtworkAvailability
 from discovery.timemachine import TimeMachine
+from discovery.musicscout import COLLECTIONS, MUSIC_FOCUS, HubBuilding, MusicScout
 from discovery.history import HistoryArchive, RetryBudgetExhausted, parse_day, previous_local_day
 from discovery.selection import GallerySelection, media_type
 from discovery.oauth import (CALLBACK_PORT, OAuthSetupError, client_info,
@@ -74,6 +75,9 @@ CAPTURE = AutoCapture(HISTORY, SETTINGS)
 # Shares HISTORY's paced request lane, so priming queues behind a day build rather
 # than racing it for the same API budget.
 TIME_MACHINE = TimeMachine(DATA_ROOT / "discovery", HISTORY, TASTE)
+# In-memory video queues; they share the same paced request lane.
+MUSIC_SCOUT = MusicScout(HISTORY, social=lambda: music_scout_client(),
+                         root=DATA_ROOT / "discovery")
 WRITE_LOCK = threading.RLock()
 ARTWORK_AVAILABILITY = ArtworkAvailability()
 HISTORY.on_block_complete = lambda key, merged: prepare_finished_block(key, merged)
@@ -283,6 +287,44 @@ def image_store(image_id: int):
     if TIME_MACHINE.has_image(image_id):
         return TIME_MACHINE
     return None
+
+
+def music_scout_client() -> SocialClient:
+    # Interactive, so outside the shared lane like reactions: the reader is waiting.
+    if not connected_or_false():
+        raise PermissionError("Sign in to Civitai to load the Music Focus collection")
+    return SocialClient()
+
+
+# Whether the signed-in account owns Music Focus, by user id. Only the owner may add to
+# it from here; everyone else sees its contents read-only.
+MUSIC_FOCUS_OWNER: dict[int, bool] = {}
+
+
+def music_focus_collection(client: SocialClient) -> dict | None:
+    """Music Focus, if the signed-in account owns it and Civitai lets it add images."""
+    user_id = connected_user_id()
+    if user_id is None:
+        return None
+    return next((row for row in client.writable_image_collections(user_id)
+                 if int(row["id"]) == MUSIC_FOCUS["collectionId"]
+                 and int(row.get("userId") or -1) == int(user_id)), None)
+
+
+def music_focus_editable() -> bool:
+    # auth_status() raises when nobody is signed in; that is a "no", not a server fault.
+    try:
+        status = auth_status()
+    except RuntimeError:
+        return False
+    if not (status.get("collectionsWrite") and status.get("socialWrite")):
+        return False
+    user_id = connected_user_id()
+    if user_id is None:
+        return False
+    if user_id not in MUSIC_FOCUS_OWNER:
+        MUSIC_FOCUS_OWNER[user_id] = music_focus_collection(SocialClient()) is not None
+    return MUSIC_FOCUS_OWNER[user_id]
 
 
 def collected_image(image_id: int) -> bool:
@@ -1515,6 +1557,56 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Time machine creator history", error)
             return
+        if parsed.path == "/api/music/queues":
+            try:
+                self.json_response(MUSIC_SCOUT.catalog())
+            except Exception as error: self.internal_error("Music Scout queues", error)
+            return
+        if parsed.path == "/api/music/queue":
+            try:
+                hidden_creators, hidden_images = hidden_preferences()
+                self.json_response(MUSIC_SCOUT.page(
+                    query.get("queue", [""])[0],
+                    offset=int(query.get("offset", ["0"])[0]),
+                    limit=int(query.get("limit", ["20"])[0]),
+                    per_creator=int(query.get("perCreator", ["3"])[0]),
+                    levels=HISTORY.visible_levels,
+                    allow=lambda entry: entry["username"].casefold() not in hidden_creators
+                    and entry["id"] not in hidden_images,
+                    refresh=query.get("refresh", ["0"])[0] == "1"))
+            except HubBuilding as building:
+                self.json_response({"building": True, "done": building.done,
+                                    "total": building.total, "name": building.name}, 202)
+            except PermissionError as error: self.json_response({"error": str(error)}, 401)
+            except ValueError as error: self.json_response({"error": str(error)}, 400)
+            except Exception as error: self.internal_error("Music Scout queue", error)
+            return
+        if parsed.path == "/api/music/collection-status":
+            try:
+                if not connected_or_false():
+                    self.json_response({"error": "Sign in to see what is in the collections."}, 401)
+                    return
+                image_ids = list(dict.fromkeys(int(value) for value in query.get("imageId", [])))
+                if not image_ids or len(image_ids) > 100:
+                    raise ValueError("Request between 1 and 100 image IDs")
+                if any(not MUSIC_SCOUT.served_entry(image_id) for image_id in image_ids):
+                    raise ValueError("Only videos Music Scout has shown can be checked")
+                # One collection Civitai fails to list leaves only its icon unknown.
+                collections = {}
+                for collection in COLLECTIONS:
+                    try: members = MUSIC_SCOUT.collection_ids(collection["collectionId"])
+                    except Exception as error:
+                        log_internal_error(f"{collection['name']} membership", error)
+                        continue
+                    collections[collection["key"]] = {str(image_id): image_id in members
+                                                      for image_id in image_ids}
+                # Adding is offered for Music Focus alone, and only to its owner.
+                try: editable = music_focus_editable()
+                except Exception: editable = False
+                self.json_response({"canAdd": editable, "collections": collections})
+            except ValueError as error: self.json_response({"error": str(error)}, 400)
+            except Exception as error: self.internal_error("Music Scout collection status", error)
+            return
         if parsed.path == "/api/timemachine/status":
             try:
                 self.json_response(TIME_MACHINE.status())
@@ -1709,7 +1801,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not raw_ids or len(raw_ids) > 100:
                     raise ValueError("Request between 1 and 100 image IDs")
                 image_ids = list(dict.fromkeys(int(value) for value in raw_ids))
-                if any(not self.collected_image(image_id) for image_id in image_ids):
+                if any(not self.collected_image(image_id) and not MUSIC_SCOUT.served_entry(image_id)
+                       for image_id in image_ids):
                     raise ValueError("Image is not in this history archive")
                 values = SocialClient().batch_query_optional("image.get", [{"id": image_id} for image_id in image_ids])
                 self.json_response({"images": {str(image_id): {"reactions": sorted(reaction_names(value)), "stats": live_reaction_stats(value)}
@@ -2279,6 +2372,55 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({"closing": True})
                 request_app_shutdown(self.server)
                 return
+            if parsed.path == "/api/music/viewed":
+                image_id = int(body.get("imageId"))
+                if not MUSIC_SCOUT.served_entry(image_id):
+                    raise ValueError("Only videos Music Scout has shown can be marked viewed")
+                MUSIC_SCOUT.mark_viewed(image_id)
+                self.json_response({"imageId": image_id, "viewed": True})
+                return
+            if parsed.path == "/api/music/focus":
+                # Adding only, always with the owner's default comment. A different
+                # comment, and any removal, is done on Civitai itself.
+                if not music_focus_editable():
+                    raise PermissionError("Only the owner of Music Focus can add to it")
+                image_id = int(body.get("imageId"))
+                if not MUSIC_SCOUT.served_entry(image_id):
+                    raise ValueError("Only videos Music Scout has shown can be saved")
+                client = SocialClient()
+                collection = music_focus_collection(client)
+                if collection is None:
+                    raise PermissionError("Only the owner of Music Focus can add to it")
+                held = client.image_collection_ids([image_id]).get(image_id) or set()
+                if collection["id"] in held:
+                    MUSIC_SCOUT.mark_member(MUSIC_FOCUS["collectionId"], image_id)
+                    self.json_response({"imageId": image_id, "inCollection": True,
+                                        "commented": False, "alreadyIn": True})
+                    return
+                # The comment goes first: a video must not land in the collection without
+                # one. If the add then fails, say so plainly rather than retrying, which
+                # would post the comment twice.
+                client.comment_on_image(image_id, MUSIC_FOCUS["commentHtml"])
+                try:
+                    client.add_image_to_collection(image_id, collection)
+                except Exception as error:
+                    log_internal_error("Music Focus add after comment", error)
+                    self.json_response({"error": "Your comment was posted, but adding the video "
+                                        "to Music Focus failed. Add it on Civitai."}, 502)
+                    return
+                # Both writes succeeded, so a failed read-back must not report an error:
+                # the reader would retry an add that already happened.
+                try:
+                    held = client.image_collection_ids([image_id]).get(image_id)
+                except Exception as error:
+                    log_internal_error("Music Focus confirm after add", error)
+                    held = None
+                in_collection = True if held is None else collection["id"] in held
+                if in_collection:
+                    MUSIC_SCOUT.mark_member(MUSIC_FOCUS["collectionId"], image_id)
+                self.json_response({"imageId": image_id, "inCollection": in_collection,
+                                    "commented": True, "alreadyIn": False})
+                return
             if parsed.path == "/api/collections/add":
                 if not auth_status().get("collectionsWrite"):
                     self.json_response({"error": "Sign out and back in once to allow collection changes."}, 403)
@@ -2328,7 +2470,8 @@ class Handler(BaseHTTPRequestHandler):
         state = CACHE.load(); item = next((row for row in state.get("items", []) if int(row.get("id", -1)) == image_id), None)
         stores = image_stores(image_id)
         in_history = bool(stores)
-        if item is None and not in_history and self.community_artwork(image_id) is None:
+        scouted = MUSIC_SCOUT.served_entry(image_id)
+        if item is None and not in_history and scouted is None and self.community_artwork(image_id) is None:
             raise ValueError("Image is not in this discovery feed")
         client = SocialClient()
         payload = client.query("image.get", {"id": image_id})
@@ -2360,6 +2503,15 @@ class Handler(BaseHTTPRequestHandler):
             if changed or live:
                 for store in stores:
                     store.update_stats(image_id, {**store.stats(image_id), **stats})
+        elif item is None and scouted is not None:
+            # A Music Scout video lives only in memory. Its listing counts are minutes
+            # old at most; Civitai's live counts were read before the toggle above.
+            stats = {**scouted.get("stats", {}), **live}
+            if changed:
+                delta = 1 if desired else -1; key = REACTIONS[reaction]
+                stats[key] = max(0, int(stats.get(key, 0)) + delta)
+                stats["reactionCount"] = sum(int(stats.get(name, 0)) for name in REACTIONS.values())
+            scouted["stats"] = stats
         else:
             stats = {**(item or {}).get("stats", {}), **live}
             if item is None and changed:
