@@ -57,6 +57,13 @@ with tempfile.TemporaryDirectory(prefix='cad3-audit-http-', ignore_cleanup_error
         status, headers, body = request('POST', '/api/settings', json.dumps({'dimSeenCards': False}),
             {'Origin': f'http://127.0.0.1:{port}', 'Content-Type': 'application/json; charset=utf-8'})
         assert status == 200 and json.loads(body)['dimSeenCards'] is False
+        status, _, body = request('POST', '/api/settings', json.dumps({'videoVisibilityPercent': 67}),
+            {'Content-Type': 'application/json'})
+        assert status == 200 and json.loads(body)['videoVisibilityPercent'] == 67
+        for invalid in (0, 101, True, '40', 40.5):
+            assert request('POST', '/api/settings', json.dumps({'videoVisibilityPercent': invalid}),
+                           {'Content-Type': 'application/json'})[0] == 400
+        assert json.loads(request('GET', '/api/settings')[2])['videoVisibilityPercent'] == 67
         assert not any(name.lower() == 'access-control-allow-origin' for name, _ in headers)
         static = dict(request('GET', '/')[1])
         assert "script-src 'self'" in static['Content-Security-Policy']
