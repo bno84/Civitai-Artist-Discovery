@@ -1257,6 +1257,8 @@ $("connect").onclick = () => connectCivitai(); $("disconnect").onclick = async (
     try { sessionStorage.removeItem(FEED_STATE); } catch (_) {}
     dayBuilt = false;
     clearGallery(); $("gallery").classList.add("hidden");
+    // Music Scout plays with sound; it must not keep playing behind the sign-in page.
+    window.CivitaiMusicScout?.setActive(false); $("musicScout").classList.add("hidden");
     $("loading").classList.add("hidden"); $("summary").textContent = "";
     setChrome(false);
     $("welcomeTitle").textContent = "Sign in to Civitai";
