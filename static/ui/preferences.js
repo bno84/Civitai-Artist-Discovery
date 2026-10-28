@@ -56,7 +56,8 @@ export function mountPreferences() {
   // Sound sits beside the other card-viewing checkbox, ahead of the slider.
   const soundRow = document.getElementById('prefDetailVideoSound').closest('label');
   dimRow.after(soundRow);
-  soundRow.after(frequent);
+  soundRow.after(document.getElementById("prefVideoVisibility").closest("label"));
+  document.getElementById("prefVideoVisibility").closest("label").after(frequent);
   const slider = frequent.querySelector('input');
   const values = [0, 50, 100, 150, 200];
   const update = () => {
