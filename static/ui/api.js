@@ -1,6 +1,7 @@
 // One transport contract for all pages. Callers may pass AbortSignal via options.
 const controlsChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('discovery-content-controls-v1') : null;
 if (controlsChannel) controlsChannel.onmessage = ({data}) => {
+  if (data?.phase === 'video-visibility') window.dispatchEvent(new CustomEvent('video-visibility-settings-changed', {detail:data.settings}));
   if (data?.phase === 'changing') window.dispatchEvent(new Event('content-controls-changing'));
   if (data?.phase === 'changed') {
     if (Array.isArray(data.settings?.browsingLevels)) window.dispatchEvent(new CustomEvent('shared-settings-changed', {detail:data.settings}));
@@ -14,7 +15,14 @@ export function finishControlChange(settings=null, artistHidden=false) {
   if(artistHidden)window.dispatchEvent(new Event('shared-artist-hidden'));
 }
 export async function api(url, options = {}) {
-  const controlChange = options.method === 'POST' && ['/api/settings', '/api/oauth/disconnect', '/api/oauth/client', '/api/content-controls/hide-artist', '/api/community/development/member'].includes(url);
+  let playbackOnly = false;
+  if (url === '/api/settings' && options.method === 'POST') {
+    try {
+      const keys = Object.keys(JSON.parse(options.body));
+      playbackOnly = keys.length === 1 && keys[0] === 'videoVisibilityPercent';
+    } catch (_) { /* The server reports invalid request bodies. */ }
+  }
+  const controlChange = !playbackOnly && options.method === 'POST' && ['/api/settings', '/api/oauth/disconnect', '/api/oauth/client', '/api/content-controls/hide-artist', '/api/community/development/member'].includes(url);
   if (controlChange) {
     window.dispatchEvent(new Event('content-controls-changing'));
     controlsChannel?.postMessage({phase:'changing'});
@@ -35,6 +43,7 @@ export async function api(url, options = {}) {
     if (!response.ok) throw Object.assign(new Error(body?.error || `The app returned HTTP ${response.status}. Try again shortly.`), {code:body?.code,status:response.status});
     if (body === null) throw new Error('The app returned an unreadable response. Please try again.');
     succeeded = true;
+    if (url === '/api/settings' && options.method === 'POST') controlsChannel?.postMessage({phase:'video-visibility', settings:{videoVisibilityPercent:body.videoVisibilityPercent}});
     if (controlChange && url === '/api/settings') settings = {browsingLevels:body.browsingLevels,contentRating:body.contentRating,applyTagFilters:body.applyTagFilters,applyAccountFilters:body.applyAccountFilters,applyImageFilters:body.applyImageFilters};
     return body;
   } catch (error) {
