@@ -24,11 +24,10 @@ carousel rather than in a separate tab.
   `type: "image"`. Civitai rejects `"video"`. Hidden-tag filtering therefore covers
   videos with no changes.
 - **Card artwork.** A video card shows a still frame and autoplays, muted, once at least
-  the selected percentage of its artwork has been on screen for 300 ms. The default
-  is **40%**. Reactions, footer text, and Community recommendation credit do not count;
-  artwork behind the sticky navigation bar does not count either. Scrolling below the
-  threshold, navigating the carousel, or removing the card stops playback and aborts
-  the download. The ▶/❚❚ button pauses a card
+  half of the artwork has been on screen for 300 ms. Reactions, footer text and
+  Community recommendation credit do not count, nor does artwork behind sticky
+  navigation. Scrolling below that threshold, navigating the carousel, or
+  removing the card stops playback and aborts the download. The ▶/❚❚ button pauses a card
   until it leaves the screen. Cards also pause while the details dialog is open, while the
   tab is hidden, and when the user prefers reduced motion (▶ still plays on request).
 - **Autoplay cost (Sep 13, Edge).**
@@ -111,8 +110,8 @@ failed candidates are skipped for five minutes and a candidate times out after
 15 seconds. Candidate callbacks belong to one artwork selection, so an obsolete
 load or error cannot repaint the next item. Details can reuse a successful poster.
 
-Playback uses the selected artwork-visible percentage and a 300 ms settle delay,
-with muted card autoplay, reduced-motion behavior,
+Playback requires half the artwork to be visible for 300 ms, with muted card autoplay,
+reduced-motion behavior,
 native detail controls, and focused-card keyboard controls. Loading or buffering
 feedback appears after two seconds without playback advancement. Fifteen seconds
 without useful progress triggers bounded recovery. Useful progress includes time
@@ -139,22 +138,6 @@ dialog closure, navigation, and hidden tabs. A manual pause remains effective fo
 that visibility visit. No video is prebuffered to manufacture a poster. Local
 client diagnostics include video_retry/video_failed and failed/recovered posters,
 using the existing scrubbed, rate-limited log pipeline.
-
-### Tune autoplay visibility
-
-Open the settings cog and adjust **Video autoplay visibility** under Appearance.
-The slider accepts 1–100%, shows the percentage while dragging, and applies and saves
-when released. This avoids starting/stopping players at every intermediate drag value.
-Changes apply to existing cards without a page reload, feed rebuild, or container
-restart. Other open tabs receive the saved percentage. A failed save restores the
-previous value. The preference is stored as `videoVisibilityPercent` in the existing
-settings file; older files default to 40% without being rewritten on read.
-
-Lower values can start more visible videos at once; no fixed player-count cap is
-added. Players below the artwork threshold are still released immediately, and
-details still releases card players while open. Closing details rechecks artwork
-visibility, so a row showing only its reactions or recommendation note cannot resume.
-There is no retained-player buffer or new media cache.
 
 `tests/video_thumbnail_hints.py` checks URL safety, browsing masks, cache bounds,
 expiration, archive compatibility, and unchanged stored rows. Deterministic lifecycle

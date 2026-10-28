@@ -53,9 +53,6 @@ class AppSettings:
             detail_video_sound = raw.get("detailVideoSound", True)
             if not isinstance(detail_video_sound, bool):
                 detail_video_sound = True
-            video_visibility_percent = raw.get("videoVisibilityPercent", 40)
-            if type(video_visibility_percent) is not int or not 1 <= video_visibility_percent <= 100:
-                video_visibility_percent = 40
             check_for_updates = raw.get("checkForUpdates", True)
             if not isinstance(check_for_updates, bool):
                 check_for_updates = True
@@ -111,7 +108,6 @@ class AppSettings:
                     "applyImageFilters": apply_image_filters,
                     "dimSeenCards": dim_seen_cards,
                     "detailVideoSound": detail_video_sound,
-                    "videoVisibilityPercent": video_visibility_percent,
                     "checkForUpdates": check_for_updates,
                     "hideHighVolumeCreators": hide_high_volume,
                     "highVolumeThreshold": high_volume_threshold,
@@ -155,7 +151,6 @@ class AppSettings:
                apply_image_filters_value: object = None,
                dim_seen_cards_value: object = None,
                detail_video_sound_value: object = None,
-               video_visibility_percent_value: object = None,
                check_for_updates_value: object = None,
                hide_high_volume_creators_value: object = None,
                high_volume_threshold_value: object = None,
@@ -192,10 +187,6 @@ class AppSettings:
                               else detail_video_sound_value)
         if not isinstance(detail_video_sound, bool):
             raise ValueError("detailVideoSound must be true or false")
-        video_visibility_percent = (current["videoVisibilityPercent"] if video_visibility_percent_value is None
-                                    else video_visibility_percent_value)
-        if type(video_visibility_percent) is not int or not 1 <= video_visibility_percent <= 100:
-            raise ValueError("videoVisibilityPercent must be an integer from 1 to 100")
         check_for_updates = (current["checkForUpdates"] if check_for_updates_value is None
                              else check_for_updates_value)
         if not isinstance(check_for_updates, bool):
@@ -250,7 +241,6 @@ class AppSettings:
                  "applyImageFilters": apply_image_filters,
                  "dimSeenCards": dim_seen_cards,
                  "detailVideoSound": detail_video_sound,
-                 "videoVisibilityPercent": video_visibility_percent,
                  "checkForUpdates": check_for_updates,
                  "hideHighVolumeCreators": hide_high_volume,
                  "highVolumeThreshold": high_volume_threshold,

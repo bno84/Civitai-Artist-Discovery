@@ -1,7 +1,7 @@
 import { reportClientEvent } from './diagnostics.js';
 
 export const VIDEO_POLICY = Object.freeze({
-  visibleShare: 0.4, settleMs: 300, indicatorMs: 2000, idleMs: 15000,
+  visibleShare: 0.5, settleMs: 300, indicatorMs: 2000, idleMs: 15000,
   progressLimitMs: 45000, tickMs: 1000, cardReloads: 1, detailReloads: 2,
   sharedReloads: 2, backoffMs: [3000, 10000], recoverySpacingMs: 1000,
 });
@@ -214,7 +214,7 @@ export function createMediaLifecycle({ createVideo, mount, eligible, render, dia
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const cards = new Set();
 const artworkOwners = new WeakMap();
-let visibleShare = VIDEO_POLICY.visibleShare, visibility = null, viewportTop = 0;
+let visibility = null, viewportTop = 0;
 let suspended = false, detail = null;
 function visibleElement(el) {
   if (!el?.isConnected || el.closest('.hidden') || document.hidden) return false;
@@ -237,21 +237,14 @@ function observeArtwork() {
   viewportTop = artworkViewportTop();
   const observer = new IntersectionObserver(entries => {
     if (observer !== visibility) return;
-    for (const entry of entries) artworkOwners.get(entry.target)?.setVideoVisible?.(entry.intersectionRatio >= visibleShare);
-  }, { threshold: [0, visibleShare], rootMargin: `-${viewportTop}px 0px 0px 0px` });
+    for (const entry of entries) artworkOwners.get(entry.target)?.setVideoVisible?.(entry.intersectionRatio >= VIDEO_POLICY.visibleShare);
+  }, { threshold: [0, VIDEO_POLICY.visibleShare], rootMargin: `-${viewportTop}px 0px 0px 0px` });
   visibility = observer;
   for (const el of cards) {
     const stage = el.querySelector('.image-stage');
     observer.observe(stage);
-    el.setVideoVisible(artworkVisibleShare(stage) >= visibleShare);
+    el.setVideoVisible(artworkVisibleShare(stage) >= VIDEO_POLICY.visibleShare);
   }
-}
-export function setCardVideoVisibilityPercent(percent) {
-  if (!Number.isInteger(percent) || percent < 1 || percent > 100) return;
-  const share = percent / 100;
-  if (share === visibleShare && visibility) return;
-  visibleShare = share;
-  observeArtwork();
 }
 window.addEventListener('resize', observeArtwork);
 if (typeof ResizeObserver !== 'undefined') {
@@ -287,7 +280,7 @@ export function attachCardVideo(el, main) {
   let item = null, visible = false, manual = false, pausedVisit = false, settleTimer = 0, released = false;
   const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'video-toggle'; toggle.hidden = true;
   const stage = el.querySelector('.image-stage'); stage.append(toggle);
-  const artworkEligible = () => artworkVisibleShare(stage) >= (manual ? Number.EPSILON : visibleShare);
+  const artworkEligible = () => artworkVisibleShare(stage) >= (manual ? Number.EPSILON : VIDEO_POLICY.visibleShare);
   const status = feedback(stage, 'card-video-status');
   const controller = createMediaLifecycle({ card: true,
     createVideo: () => { const v = document.createElement('video'); v.className = 'card-video'; v.hidden = true; v.setAttribute('aria-hidden', 'true'); return v; },
