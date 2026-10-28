@@ -162,7 +162,7 @@ for(const name of ['NotAllowedError','NotSupportedError']){
 console.log('video lifecycle: slow loads, natural recovery, true stalls, budgets, restoration, cancellation and native controls passed');
 
 async function played(f) {
- f.controller.start();const v=f.videos.at(-1);v.readyState=3;v.buffer=20;v.currentTime=8;
+ f.controller.start();const v=f.videos.at(-1);v.readyState=3;v.buffer=v.duration;v.networkState=1;v.currentTime=8;
  await f.clock.advance(1000);return v;
 }
 // Brief absence retains the decoded frame and source, ignoring queued media events.
@@ -213,6 +213,21 @@ for(const card of [true,false]){
  f.controller.start();assert.equal(f.controller.park(),false);f.controller.cancel('offscreen');
  assert.equal(retention.size,0);assert.equal(f.videos[0].src,'');f.controller.release();
 }
+// Playback alone is insufficient: incomplete or still-fetching streams must
+// release their connection rather than blocking newly visible videos.
+for(const failure of ['fetching','partial','missing-start','gapped','unknown-duration','empty']){
+ const clock=new Clock(),retention=createVideoRetentionPool({clock}),f=fixture({clock,retention});
+ const v=await played(f);
+ if(failure==='fetching')v.networkState=2;
+ if(failure==='partial')v.buffer=v.duration/2;
+ if(failure==='missing-start')Object.defineProperty(v,'buffered',{value:{length:1,start:()=>8,end:()=>v.duration}});
+ if(failure==='gapped')Object.defineProperty(v,'buffered',{value:{length:2,start:i=>i?20:0,end:i=>i?v.duration:10}});
+ if(failure==='unknown-duration')v.duration=Infinity;
+ if(failure==='empty')v.buffer=0;
+ f.setEligible(false);assert.equal(f.controller.park(),false,failure);f.controller.cancel('offscreen');
+ assert.equal(retention.size,0);assert.equal(v.src,'');assert(v.removed);assert.equal(f.budget.size,0);
+ f.controller.release();
+}
 // An errored/discarded parked source starts fresh without using recovery attempts.
 for(const failure of ['error','discarded']){
  const clock=new Clock(),retention=createVideoRetentionPool({clock});const f=fixture({clock,retention});
@@ -229,7 +244,7 @@ for(const failure of ['error','discarded']){
 {
  const clock=new Clock(),retention=createVideoRetentionPool({clock});const f=fixture({clock,retention});
  f.controller.start();await clock.advance(18000);assert.equal(f.videos.length,2);
- const v=f.videos[1];v.readyState=3;v.buffer=20;v.currentTime=8;await clock.advance(1000);
+ const v=f.videos[1];v.readyState=3;v.buffer=v.duration;v.networkState=1;v.currentTime=8;await clock.advance(1000);
  f.setEligible(false);f.controller.park();f.setEligible(true);f.controller.start();await clock.advance(15000);
  assert.equal(f.controller.state,'failed');assert.equal(f.videos.length,2);assert.equal(f.budget.get('1'),1);
  f.controller.release();
