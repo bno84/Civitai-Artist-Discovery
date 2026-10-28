@@ -4,41 +4,18 @@ export const VIDEO_POLICY = Object.freeze({
   visibleShare: 0.5, settleMs: 300, indicatorMs: 2000, idleMs: 15000,
   progressLimitMs: 45000, tickMs: 1000, cardReloads: 1, detailReloads: 2,
   sharedReloads: 2, backoffMs: [3000, 10000], recoverySpacingMs: 1000,
-  parkedMs: 30000,
 });
 const sharedBudget = new Map();
 let nextRecoveryAt = 0;
 const realClock = { now: () => performance.now(), setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: id => clearTimeout(id) };
 const reserveRecovery = (at, spacing) => { const slot = Math.max(at, nextRecoveryAt); nextRecoveryAt = slot + spacing; return slot; };
-export function resetVideoRecoveryBudget() { sharedBudget.clear(); nextRecoveryAt = 0; parkedCards.clear(); }
-
-export function createVideoRetentionPool({ ttlMs = VIDEO_POLICY.parkedMs, clock = realClock } = {}) {
-  const entries = new Map();
-  const forget = key => {
-    const entry = entries.get(key);
-    if (!entry) return;
-    entries.delete(key); clock.clearTimeout(entry.timer);
-    return entry;
-  };
-  const evict = (key, reason) => forget(key)?.release(reason);
-  return {
-    retain(key, release) {
-      // Repeated observer/refresh events must not extend a parked player's deadline.
-      if (entries.has(key)) return;
-      entries.set(key, { release, timer: clock.setTimeout(() => evict(key, 'retention-expired'), ttlMs) });
-    },
-    forget,
-    clear() { for (const key of [...entries.keys()]) evict(key, 'retention-cleared'); },
-    get size() { return entries.size; },
-  };
-}
-const parkedCards = createVideoRetentionPool();
+export function resetVideoRecoveryBudget() { sharedBudget.clear(); nextRecoveryAt = 0; }
 
 // One small lifecycle shared by the existing card and native detail adapters. Each
 // attempt owns its element/listeners; replacing it cannot deliver old events to a new player.
 export function createMediaLifecycle({ createVideo, mount, eligible, render, diagnose = () => {},
   card = false, muted = true, policy = VIDEO_POLICY, clock = realClock, budget = sharedBudget,
-  reserve = reserveRecovery, online = () => navigator.onLine !== false, retention = null }) {
+  reserve = reserveRecovery, online = () => navigator.onLine !== false }) {
   let item = null, scope = null, generation = 0, revision = 0, wanted = false;
   let state = 'idle', message = '', retryable = false, disposed = false, snapshot = null;
   let restartAtBeginning = false;
@@ -62,14 +39,11 @@ export function createMediaLifecycle({ createVideo, mount, eligible, render, dia
   }
   function remember() {
     const v = scope?.video;
-    // The browser can reset currentTime when discarding an idle source. Parking
-    // already saved its last valid position before pausing, so keep that snapshot.
-    if (!v || scope.parked) return;
+    if (!v) return;
     const time = scope.restoring ? snapshot?.time || 0 : Number.isFinite(v.currentTime) ? Math.max(0, v.currentTime) : 0;
     snapshot = { time, rate: v.playbackRate || 1, volume: v.volume, muted: v.muted };
   }
   function retire() {
-    retention?.forget(api);
     generation++; clearTimers();
     const old = scope; scope = null;
     if (!old) return;
@@ -151,9 +125,7 @@ export function createMediaLifecycle({ createVideo, mount, eligible, render, dia
     s.playRequested = true;
     const r = revision;
     Promise.resolve(v.play()).then(() => {
-      if (!valid(s)) return;
-      if (s.parked) { v.pause(); return; }
-      if (r !== revision || !wanted) return;
+      if (!valid(s) || r !== revision || !wanted) return;
       if (!eligible()) { cancel('ineligible'); return; }
       emit('playing');
     }).catch(error => {
@@ -180,10 +152,6 @@ export function createMediaLifecycle({ createVideo, mount, eligible, render, dia
     if (item.poster) v.poster = item.poster;
     const listen = (name, fn) => v.addEventListener(name, () => {
       if (!valid(s)) return;
-      if (s.parked) {
-        if (name === 'play' || name === 'playing') v.pause();
-        return;
-      }
       if (!eligible()) { cancel('ineligible'); return; }
       fn();
     }, { signal: s.abort.signal });
@@ -224,30 +192,9 @@ export function createMediaLifecycle({ createVideo, mount, eligible, render, dia
       if (disposed || !eligible() || !item?.source) return;
       if (!manual && ['failed', 'awaiting-gesture', 'offline', 'user-paused'].includes(state)) return;
       if (scope && wanted) return;
-      retention?.forget(api);
       wanted = true; revision++;
-      if (scope?.parked && (scope.video.error || scope.video.networkState === 3)) {
-        // A browser may discard a retained source. Treat that as a normal fresh
-        // visit, preserving the position and the existing error-recovery budgets.
-        remember(); retire();
-      }
-      if (scope) { scope.parked = false; scope.video.preload = 'auto'; scope.playRequested = false; scope.lastTime = scope.video.currentTime; scope.lastUseful = clock.now(); scope.episode = clock.now(); requestPlay(scope); later(() => watchdog(scope), policy.tickMs); }
+      if (scope) { scope.playRequested = false; scope.lastUseful = clock.now(); scope.episode = clock.now(); requestPlay(scope); later(() => watchdog(scope), policy.tickMs); }
       else begin();
-    },
-    park() {
-      if (scope?.parked) return true;
-      if (!card || !retention || !wanted || !scope?.hasPlayed || scope.restoring || scope.video.seeking ||
-          scope.video.readyState < 2 || scope.video.error) return false;
-      const v = scope.video;
-      // Pausing/preload=none does not abort an in-flight media request. Retaining
-      // partial streams can occupy every connection and starve visible players.
-      if (v.networkState !== 1 || !Number.isFinite(v.duration) || v.duration <= 0 ||
-          v.buffered.length !== 1 || v.buffered.start(0) > 0.1 || v.buffered.end(0) < v.duration - 0.1) return false;
-      wanted = false; revision++; clearTimers(); remember(); scope.parked = true;
-      scope.playRequested = false; scope.video.preload = 'none'; scope.video.pause();
-      emit('parked');
-      retention.retain(api, reason => cancel(reason));
-      return true;
     },
     pause() { wanted = false; cancel('user-paused'); },
     cancel,
@@ -266,7 +213,7 @@ export function createMediaLifecycle({ createVideo, mount, eligible, render, dia
 
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const cards = new Set();
-let suspended = false, controlsChanging = false, detail = null;
+let suspended = false, detail = null;
 function visibleElement(el) {
   if (!el?.isConnected || el.closest('.hidden') || document.hidden) return false;
   const box = el.getBoundingClientRect();
@@ -280,19 +227,6 @@ export function refreshVideoEligibility() {
   detail?.refresh();
 }
 document.addEventListener('visibilitychange', refreshVideoEligibility);
-window.addEventListener('content-controls-changing', () => {
-  controlsChanging = true;
-  for (const el of cards) el.stopVideo?.();
-});
-window.addEventListener('community-controls-changed', () => {
-  controlsChanging = false;
-  // Let each view discard/revalidate its cards before eligible players resume.
-  queueMicrotask(refreshVideoEligibility);
-});
-window.addEventListener('pagehide', () => {
-  for (const el of cards) el.stopVideo?.();
-  detail?.controller.cancel('page-hidden');
-});
 window.addEventListener('online', () => { for (const el of cards) el.videoOnline?.(); detail?.controller.online(); });
 reducedMotion.addEventListener?.('change', refreshVideoEligibility);
 export function suspendCardVideos(value) { suspended = !!value; refreshVideoEligibility(); }
@@ -313,15 +247,15 @@ function feedback(host, kind) {
 function diagnostic(surface, item) {
   return (event, details) => reportClientEvent(event, { ...details, surface, imageId: item()?.id });
 }
-export function attachCardVideo(el, main, { retention = parkedCards } = {}) {
+export function attachCardVideo(el, main) {
   let item = null, visible = false, manual = false, pausedVisit = false, settleTimer = 0, released = false;
   const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'video-toggle'; toggle.hidden = true;
   const stage = el.querySelector('.image-stage'); stage.append(toggle);
   const status = feedback(stage, 'card-video-status');
-  const controller = createMediaLifecycle({ card: true, retention,
+  const controller = createMediaLifecycle({ card: true,
     createVideo: () => { const v = document.createElement('video'); v.className = 'card-video'; v.hidden = true; v.setAttribute('aria-hidden', 'true'); return v; },
     mount: v => main.after(v),
-    eligible: () => !released && !!item?.videoUrl && !suspended && !controlsChanging && visibleElement(el) &&
+    eligible: () => !released && !!item?.videoUrl && !suspended && visibleElement(el) &&
       !!el.dataset.imagesActive && el.getAttribute('aria-busy') !== 'true' &&
       (manual || (visible && !pausedVisit && !reducedMotion.matches)),
     diagnose: diagnostic('gallery', () => item),
@@ -330,8 +264,7 @@ export function attachCardVideo(el, main, { retention = parkedCards } = {}) {
       el.classList.toggle('video-playing', info.state === 'playing' || info.state === 'buffering');
       el.classList.toggle('video-loading', ['loading', 'recovering'].includes(info.state));
       el.classList.toggle('video-has-feedback', !!info.message);
-      el.classList.toggle('video-parked', info.state === 'parked');
-      if (info.video) info.video.hidden = !['playing', 'buffering', 'user-paused', 'parked'].includes(info.state);
+      if (info.video) info.video.hidden = !['playing', 'buffering', 'user-paused'].includes(info.state);
       const active = info.wanted && ['loading', 'playing', 'buffering', 'recovering'].includes(info.state);
       toggle.textContent = active ? '\u275a\u275a' : '\u25b6';
       toggle.setAttribute('aria-label', active ? 'Pause video' : 'Play video'); toggle.title = toggle.getAttribute('aria-label');
@@ -348,22 +281,14 @@ export function attachCardVideo(el, main, { retention = parkedCards } = {}) {
     if (released) return;
     if (!el.isConnected) { if (el.dataset.videoAttached) el.releaseVideo(); return; }
     el.dataset.videoAttached = '1';
-    if (document.hidden || controlsChanging || el.closest('.hidden, [hidden]') ||
-        el.getAttribute('aria-busy') === 'true' || !el.dataset.imagesActive ||
-        (!manual && (pausedVisit || reducedMotion.matches))) {
-      if (controller.video || controller.state === 'recovering') controller.cancel('ineligible');
-      return;
-    }
-    if (suspended || !visibleElement(el) || (!manual && !visible)) {
-      if (!controller.park() && (controller.video || controller.state === 'recovering')) controller.cancel('ineligible');
-      return;
-    }
+    if (!visibleElement(el) || suspended || el.getAttribute('aria-busy') === 'true' || !el.dataset.imagesActive ||
+        (!manual && (!visible || pausedVisit || reducedMotion.matches))) { if (controller.video || controller.state === 'recovering') controller.cancel('ineligible'); return; }
     controller.start();
   };
   el.setVideoVisible = value => {
     clearTimeout(settleTimer);
     if (value) { settleTimer = setTimeout(() => { visible = true; update(); }, VIDEO_POLICY.settleMs); return; }
-    visible = false; manual = false; pausedVisit = false; update();
+    visible = false; manual = false; pausedVisit = false; controller.cancel('offscreen');
   };
   el.resumeVideo = update;
   el.stopVideo = () => controller.cancel('navigation');
