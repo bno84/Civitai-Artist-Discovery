@@ -55,7 +55,11 @@ wide layouts and details visits that pause ten or more visible videos at once. R
 visibility events do not extend a player's deadline; resuming and later leaving again
 starts a new retention visit.
 
-Only players with observed playback progress and decodable media qualify. Fast scrolling
+Only players with observed playback progress, a complete buffered timeline, and an idle
+network state qualify. Partially downloaded videos are released even if playback has
+started. Pausing and setting `preload="none"` does not abort an existing request: keeping
+such streams can occupy the browser's connections and delay newly visible videos.
+This also applies when opening details. Fast scrolling
 still respects the 300 ms settle delay, and a video that has not played is released when
 it leaves view. A retained frame stays visible while the player is paused or waiting for
 the settle delay, so a failed still poster does not flash an unavailable overlay on it.
@@ -70,12 +74,12 @@ browser document, page exit, and content-control invalidation release players im
 No retained buffer survives those invalidations. User pause and reduced-motion behavior
 are unchanged, and this feature adds no disk cache, database state, or new autoplay limit.
 
-Retention bounds lifetime, not player count, exact memory, or transferred bytes. Pausing
-and setting `preload="none"` is a browser hint: an existing transfer may continue, and the
-browser may discard buffered data. Tests use a local MP4 served with `Cache-Control:
+Retention bounds lifetime, not player count or exact memory. The browser may still
+discard buffered data. Tests use a local MP4 served with `Cache-Control:
 no-store` to verify that a buffered card reuses its element with no additional media request
 after scrolling or a short details visit. Expiry permits a fresh request. This does not
-guarantee zero requests for partially buffered Civitai videos on every browser.
+guarantee zero requests on every browser. Incomplete videos deliberately reload on return
+so that offscreen transfers cannot hold up the current viewport.
 
 ## Seen tracking
 
