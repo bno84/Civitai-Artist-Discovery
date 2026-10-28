@@ -300,7 +300,11 @@ def music_focus_collection(client: SocialClient) -> dict | None:
 
 
 def music_focus_editable() -> bool:
-    status = auth_status()
+    # auth_status() raises when nobody is signed in; that is a "no", not a server fault.
+    try:
+        status = auth_status()
+    except RuntimeError:
+        return False
     if not (status.get("collectionsWrite") and status.get("socialWrite")):
         return False
     user_id = connected_user_id()
