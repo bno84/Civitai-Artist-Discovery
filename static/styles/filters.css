@@ -52,11 +52,6 @@
 .preferences-menu .card-size-preference .preference-slider,
 .preferences-menu .frequent-posters .preference-slider { width: 100%; }
 .preference-slider input { width: 100%; accent-color: var(--accent); }
-.preferences-menu .video-visibility-preference { flex-direction: column; align-items: stretch; gap: 8px; }
-.video-visibility-preference small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; font-weight: normal; }
-.video-visibility-preference > span:last-child { display: flex; align-items: center; gap: 12px; }
-#prefVideoVisibility { flex: 1; min-width: 0; accent-color: var(--accent); }
-#prefVideoVisibilityValue { min-width: 4ch; text-align: right; font-variant-numeric: tabular-nums; }
 .slider-labels { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 10px; }
 .card-size-preference { margin-bottom: 8px; }
 .preferences-menu .preferences-footnote { display: none; }
