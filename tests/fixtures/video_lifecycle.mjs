@@ -190,18 +190,20 @@ async function played(f) {
  next.readyState=3;next.dispatchEvent(new Event('loadedmetadata'));
  assert.equal(next.currentTime,8);assert.equal(f.budget.size,0);f.controller.release();
 }
-// The oldest parked scope is evicted first; resume and re-park makes it recent again.
+// Retain the whole recently viewed grid; there is no player-count eviction.
 {
- const clock=new Clock(),retention=createVideoRetentionPool({clock,maxEntries:2});
+ const clock=new Clock(),retention=createVideoRetentionPool({clock});
  const fixtures=[];
- for(let i=0;i<3;i++){
+ for(let i=0;i<20;i++){
   const f=fixture({clock,retention});await played(f);f.setEligible(false);f.controller.park();fixtures.push(f);
  }
- assert.equal(retention.size,2);assert.equal(fixtures[0].videos[0].src,'');
- const recent=fixtures[1];recent.setEligible(true);recent.controller.start();
- recent.setEligible(false);recent.controller.park();
- const fourth=fixture({clock,retention});await played(fourth);fourth.setEligible(false);fourth.controller.park();fixtures.push(fourth);
- assert.equal(fixtures[2].videos[0].src,'');assert(recent.videos[0].src);
+ assert.equal(retention.size,20);
+ for(const f of fixtures){
+  const v=f.videos[0];assert(v.src);assert(!v.removed);f.setEligible(true);f.controller.start();
+  assert.equal(f.controller.video,v);assert.equal(f.videos.length,1);assert.equal(f.budget.size,0);
+ }
+ assert.equal(retention.size,0);
+ for(const f of fixtures){f.setEligible(false);f.controller.park()}
  retention.clear();assert.equal(retention.size,0);
  for(const f of fixtures){assert.equal(f.videos[0].src,'');f.controller.release()}
 }
@@ -251,4 +253,4 @@ for(const action of ['navigation','hidden','removed','source-change','item-chang
  const v=await played(f);f.setEligible(false);f.controller.park();resolve();await clock.advance(0);
  assert.equal(f.controller.state,'parked');assert(v.paused);assert(v.src);f.controller.release();
 }
-console.log('video retention: reuse, bounded expiry/LRU, queued events, budgets and hard invalidation passed');
+console.log('video retention: whole-grid reuse, expiry, queued events, budgets and hard invalidation passed');
