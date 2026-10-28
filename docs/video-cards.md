@@ -49,10 +49,11 @@ carousel rather than in a separate tab.
 
 Returning to a played card used to create a new video element and fetch its source again,
 even after a very short scroll or details visit. Card players now pause immediately and
-retain their existing source for up to **30 seconds**. At most **four paused players** are
-retained across the page, in addition to players currently eligible for playback. The
-oldest parked player is released when the limit is exceeded. Repeated visibility events
-do not extend its deadline; resuming and later leaving again starts a new retention visit.
+retain their existing source for up to **30 seconds**, with **no player-count cap**.
+The whole recently viewed grid can resume without evicting each other's buffers, including
+wide layouts and details visits that pause ten or more visible videos at once. Repeated
+visibility events do not extend a player's deadline; resuming and later leaving again
+starts a new retention visit.
 
 Only players with observed playback progress and decodable media qualify. Fast scrolling
 still respects the 300 ms settle delay, and a video that has not played is released when
@@ -69,7 +70,7 @@ browser document, page exit, and content-control invalidation release players im
 No retained buffer survives those invalidations. User pause and reduced-motion behavior
 are unchanged, and this feature adds no disk cache, database state, or new autoplay limit.
 
-Retention bounds player count and time, not exact memory or transferred bytes. Pausing
+Retention bounds lifetime, not player count, exact memory, or transferred bytes. Pausing
 and setting `preload="none"` is a browser hint: an existing transfer may continue, and the
 browser may discard buffered data. Tests use a local MP4 served with `Cache-Control:
 no-store` to verify that a buffered card reuses its element with no additional media request
