@@ -27,6 +27,18 @@ body > .app-header { min-height: 64px; padding: 10px 20px; gap: 20px; background
 .gallery-navigation #selectedDate { font-size: 14px; }
 .gallery-navigation #summary { margin-left: auto; font-size: 12px; }
 .command-bar .segment-toolbar { position: static; top: auto; flex: 1 1 auto; min-width: 0; padding: 0; justify-content: flex-end; flex-wrap: nowrap; background: transparent; border: 0; backdrop-filter: none; gap: 8px; }
+/* When the tabs leave less room than the calendar, view and filters controls
+   need, those controls take their own row rather than being squeezed under one another. */
+@media (min-width: 701px) {
+  .view-tabs.command-bar { flex-wrap: wrap; }
+  .command-bar .segment-toolbar { flex-basis: 360px; }
+  /* The result summary gives way first; it already truncates. */
+  .command-bar .segment-toolbar > :not(.active-filters) { flex-shrink: 0; }
+}
+/* Narrow windows above the phone layout: tighter tabs keep them on one row. */
+@media (min-width: 701px) and (max-width: 899px) {
+  .view-tabs > button { padding: 6px 8px; gap: 5px; font-size: 13px; }
+}
 .segment-toolbar label { margin-left: 0; }
 .ui-field { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
 .segment-toolbar select, .filter-button { min-height: 36px; border-radius: var(--radius-sm); }
