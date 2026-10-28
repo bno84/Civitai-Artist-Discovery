@@ -1838,12 +1838,12 @@ window.addEventListener('shared-artist-hidden', () => {
     loadDay(selectedDate, false).catch(showLoadError);
   }
 });
-const viewScroll = { gallery: 0, discovery: 0, timemachine: 0 };
+const viewScroll = { gallery: 0, discovery: 0, timemachine: 0, music: 0 };
 const ACTIVE_VIEW_KEY='civitai-active-view';
 function readActiveView() {
   try {
     const view=sessionStorage.getItem(ACTIVE_VIEW_KEY);
-    if(['community','gallery','discovery','timemachine'].includes(view))return view;
+    if(['community','gallery','discovery','timemachine','music'].includes(view))return view;
   } catch(_) {}
   return 'community';
 }
@@ -1859,8 +1859,9 @@ function showView(name) {
   const discovery = name === "discovery";
   const timeMachine = name === "timemachine";
   const community = name === "community";
+  const music = name === "music";
   document.body.classList.toggle('community-view', community);
-  const gallery = !discovery && !timeMachine && !community;
+  const gallery = !discovery && !timeMachine && !community && !music;
   document.getElementById('community')?.classList.toggle('hidden', !community);
   const communityTab = document.getElementById('tabCommunity');
   if (communityTab) { communityTab.classList.toggle('active', community); communityTab.setAttribute('aria-pressed', String(community)); }
@@ -1868,10 +1869,14 @@ function showView(name) {
   $("tabGallery").classList.toggle("active", gallery); $("tabGallery").setAttribute("aria-pressed", String(gallery));
   $("tabDiscovery").classList.toggle("active", discovery); $("tabDiscovery").setAttribute("aria-pressed", String(discovery));
   $("tabTimeMachine").classList.toggle("active", timeMachine); $("tabTimeMachine").setAttribute("aria-pressed", String(timeMachine));
+  $("tabMusicScout").classList.toggle("active", music); $("tabMusicScout").setAttribute("aria-pressed", String(music));
   segmentToolbar.classList.toggle("hidden", !gallery && !community);
   ["olderDay", "newerDay", "selectedDate", "rebuildDay", "summary"].forEach(id => $(id).classList.toggle("hidden", !gallery));
   $("discovery").classList.toggle("hidden", !discovery);
   $("timeMachine").classList.toggle("hidden", !timeMachine);
+  $("musicScout").classList.toggle("hidden", !music);
+  // Music Scout plays with sound, so it must go quiet the moment another tab opens.
+  window.CivitaiMusicScout?.setActive(music);
   $("loading").classList.toggle("hidden", !gallery || dayBuilt);
   $("gallery").classList.toggle("hidden", !gallery || !dayBuilt);
   window.CivitaiUI.refreshVideoEligibility();
@@ -1879,6 +1884,7 @@ function showView(name) {
   // the reader actually is rather than the position the previous tab was left at.
   if (previous !== name) window.scrollTo({ top: viewScroll[name] ?? 0, behavior: "auto" });
   if (community) { window.CivitaiCommunity?.activate(); return; }
+  if (music) return;
   if (gallery) {
     dailyPager.resume();
     if (dailyControlsStale) {
@@ -1918,6 +1924,7 @@ $("tabGallery").onclick = () => {
 };
 $("tabDiscovery").onclick = () => showView("discovery");
 $("tabTimeMachine").onclick = () => showView("timemachine");
+$("tabMusicScout").onclick = () => showView("music");
 
 // The Time Machine walks each followed creator from their oldest image. A card advances
 // only when it has been scrolled past, using the same rule as the dimmed gallery cards,

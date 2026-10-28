@@ -94,6 +94,22 @@ Windows-only.
   frame and plays itself, muted, while it is on screen; scrolling away stops playback and
   aborts the download, and a play/pause control overrides either choice. The details
   dialog plays the larger file with controls.
+- Adds a **Music Scout** tab for skimming videos one at a time with sound, using ← and →.
+  It has three queues: the latest videos capped at a few per creator (3 by default), the
+  latest videos that credit a music generation model (YuE2 3B, ACE-Step Audio Gen,
+  MiniMax Music 3), and every latest video.
+  Signed in, two curated collections each get two more queues: the
+  collection itself in recently added order, and a hub playing the newest videos from
+  every creator ever collected there, capped per creator. These are Music Focus 🎸 (with
+  MF hub) and Sillycat83's H3 Movies Museum 🎬 (with Museum hub). Only videos are
+  requested, the next one buffers while the current one plays, and a thumbnail strip shows
+  the loaded queue. A video counts as viewed after a second on screen; viewed videos are
+  faded in the strip and remembered across sessions, and a queue opens on the first one
+  not viewed yet. Reactions sit beside each video, with a 🎸 and a 🎬 marker showing
+  whether it is in each collection. Only Music Focus's owner can add to it from here:
+  either with the default comment, posted as is, or by copying that comment and doing both
+  steps on Civitai. Removing is left to Civitai. Queues follow the selected viewing levels
+  and leave out hidden creators and hidden images.
 - Provides **For you**, **Popular**, **New to you**, **Followed first**, and
   **Emerging first** views.
 - Ranks **Popular** by the sum of reactions across every visible image each artist posted
@@ -303,6 +319,8 @@ It can include:
   and collection metrics;
 - `discovery/taste.sqlite3`: reaction-derived taste analysis, seen state, tags, and
   mirrored Content Controls;
+- `discovery/musicscout.sqlite3`: which Music Scout videos were viewed, and each
+  collection hub's saved list of its creators' newest videos;
 - `oauth_tokens.dpapi`: Windows-only DPAPI-encrypted OAuth credentials;
 - `oauth_client.json` and `settings.json`: local configuration, including Gallery preferences;
 - creator/follow caches, the single-instance marker, and `error.log`;
