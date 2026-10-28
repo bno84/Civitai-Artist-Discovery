@@ -1,7 +1,7 @@
 import { reportClientEvent } from './diagnostics.js';
 
 export const VIDEO_POLICY = Object.freeze({
-  visibleShare: 0.25, settleMs: 300, indicatorMs: 2000, idleMs: 15000,
+  visibleShare: 0.5, settleMs: 300, indicatorMs: 2000, idleMs: 15000,
   progressLimitMs: 45000, tickMs: 1000, cardReloads: 1, detailReloads: 2,
   sharedReloads: 2, backoffMs: [3000, 10000], recoverySpacingMs: 1000,
 });
