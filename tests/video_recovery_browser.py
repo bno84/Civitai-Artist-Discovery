@@ -29,6 +29,7 @@ stop = threading.Event()
 HTML = """<!doctype html><html><head><link rel="stylesheet" href="/styles/cards.css"><style>
 body{margin:0} #host{position:relative;width:320px;height:240px}video{width:320px;height:240px}
 .image-stage{position:relative;height:240px}.card-video{position:absolute;inset:0}
+#host.grid video{width:100%;height:100%}
 dialog{width:340px;height:300px} [hidden]{display:none!important}
 </style></head><body><div id="host"></div><dialog id="details"><img id="detailImage"></dialog>
 <script type="module">
@@ -57,6 +58,7 @@ window.makeCard=(mode='card',options={})=>{
 };
 window.showPoster=showVideoPoster;window.showImage=showArtwork;window.showDetail=showDetailVideo;window.clearDetail=clearDetailVideo;window.refreshVideos=refreshVideoEligibility;
 window.makeRetention=createVideoRetentionPool;window.suspendCards=suspendCardVideos;
+window.attachVideo=attachCardVideo;
 window.ready=true;
 </script></body></html>"""
 
@@ -307,6 +309,54 @@ try:
             assert page.locator('.card-video').count() == 0
             page.evaluate("card.releaseVideo();card.remove();document.querySelector('#scroll-space').remove();window.scrollTo(0,0)")
 
+            # Two rows of five videos must all survive a details visit. Media is
+            # no-store, so count-based eviction would show up as fresh requests.
+            # Give this layout its own page, independent of the stalled/error
+            # players and media-cache pressure exercised by the recovery cases.
+            recovery_page = page
+            page = browser.new_page(viewport={"width": 1000, "height": 700})
+            page.goto(base)
+            page.wait_for_function('window.ready')
+            page.evaluate("""name => {
+                const host=document.querySelector('#host');host.replaceChildren();host.classList.add('grid');
+                host.style.cssText='width:950px;height:440px;display:grid;grid-template-columns:repeat(5,1fr)';
+                window.gridCards=Array.from({length:10},(_,i)=>{
+                    const el=document.createElement('article');el.className='creator-card';
+                    el.dataset.imagesActive='1';el.setAttribute('aria-busy','false');
+                    el.innerHTML='<div class="image-stage" style="height:180px"><button class="image-button"><img></button></div>';
+                    host.append(el);const show=attachVideo(el,el.querySelector('img'));
+                    show({id:'grid-'+i,type:'video',videoUrl:location.origin+'/media/grid-'+name+'-'+i+'.mp4'});
+                    el.setVideoVisible(true);return el;
+                });
+            }""", name)
+            page.wait_for_function("""gridCards.every(el=>{
+                const v=el.querySelector('video');return v?.currentTime>1.2 && v.networkState===1 &&
+                    v.buffered.length===1 && v.buffered.start(0)===0 && v.buffered.end(0)>=v.duration-.1;
+            })""", timeout=20000)
+            assert page.evaluate("new Set(gridCards.map(el=>el.offsetLeft)).size===5 && new Set(gridCards.map(el=>el.offsetTop)).size===2")
+            grid_paths = [f'/media/grid-{name}-{i}.mp4' for i in range(10)]
+            grid_requests_before = {path: requests[path] for path in grid_paths}
+            page.evaluate("""() => {
+                window.gridPlayers=gridCards.map(el=>el.querySelector('video'));
+                suspendCards(true);document.querySelector('#details').showModal();
+                showDetail(document.querySelector('#detailImage'),location.origin+'/media/grid-details.mp4','grid-details');
+            }""")
+            page.wait_for_function("gridCards.every(el=>el.dataset.videoState==='parked') && document.querySelector('#detailVideo').currentTime>.25")
+            assert page.evaluate("gridPlayers.every(v=>v.paused && v.isConnected && v.getAttribute('src'))")
+            page.evaluate("window.gridTimes=gridPlayers.map(v=>v.currentTime);clearDetail();document.querySelector('#details').close();suspendCards(false)")
+            page.wait_for_function("gridPlayers.every((v,i)=>v.currentTime>gridTimes[i]+.25)")
+            assert page.evaluate("gridCards.every((el,i)=>el.querySelector('video')===gridPlayers[i])")
+            assert all(requests[path] == count for path, count in grid_requests_before.items()), {
+                'before': grid_requests_before, 'after': {path: requests[path] for path in grid_paths},
+                'players': page.evaluate("gridPlayers.map(v=>({time:v.currentTime,ready:v.readyState,network:v.networkState,buffer:Array.from({length:v.buffered.length},(_,i)=>[v.buffered.start(i),v.buffered.end(i)])}))")}
+            page.evaluate("""() => {
+                gridCards.forEach(el=>{el.releaseVideo();el.remove()});
+                const host=document.querySelector('#host');host.classList.remove('grid');host.removeAttribute('style');
+            }""")
+            page.close()
+            page = recovery_page
+            page.bring_to_front()
+
             # Closing a real native dialog retires its media, including deferred restoration.
             page.evaluate("""() => {
                 const d=document.querySelector('#details');d.showModal();
@@ -346,4 +396,5 @@ print(json.dumps({"browsers": tested, "nativePlayback": True, "slowWithoutReload
                   "naturalRecovery": True, "midPlaybackRecovery": True,
                   "scrollAndDetailReuseWithoutNewRequests": True, "retentionExpiry": True,
                   "retentionInvalidation": True, "fastFlickWithoutRequests": True,
+                  "wideGridPlayers": 10, "wideGridDetailsWithoutNewRequests": True,
                   "posterOnlyNeverLoadsVideo": True, "nativeDetailsCleaned": True}))

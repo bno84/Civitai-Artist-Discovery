@@ -4,7 +4,7 @@ export const VIDEO_POLICY = Object.freeze({
   visibleShare: 0.5, settleMs: 300, indicatorMs: 2000, idleMs: 15000,
   progressLimitMs: 45000, tickMs: 1000, cardReloads: 1, detailReloads: 2,
   sharedReloads: 2, backoffMs: [3000, 10000], recoverySpacingMs: 1000,
-  parkedCards: 4, parkedMs: 30000,
+  parkedMs: 30000,
 });
 const sharedBudget = new Map();
 let nextRecoveryAt = 0;
@@ -12,8 +12,7 @@ const realClock = { now: () => performance.now(), setTimeout: (fn, ms) => setTim
 const reserveRecovery = (at, spacing) => { const slot = Math.max(at, nextRecoveryAt); nextRecoveryAt = slot + spacing; return slot; };
 export function resetVideoRecoveryBudget() { sharedBudget.clear(); nextRecoveryAt = 0; parkedCards.clear(); }
 
-export function createVideoRetentionPool({ maxEntries = VIDEO_POLICY.parkedCards,
-  ttlMs = VIDEO_POLICY.parkedMs, clock = realClock } = {}) {
+export function createVideoRetentionPool({ ttlMs = VIDEO_POLICY.parkedMs, clock = realClock } = {}) {
   const entries = new Map();
   const forget = key => {
     const entry = entries.get(key);
@@ -27,7 +26,6 @@ export function createVideoRetentionPool({ maxEntries = VIDEO_POLICY.parkedCards
       // Repeated observer/refresh events must not extend a parked player's deadline.
       if (entries.has(key)) return;
       entries.set(key, { release, timer: clock.setTimeout(() => evict(key, 'retention-expired'), ttlMs) });
-      while (entries.size > maxEntries) evict(entries.keys().next().value, 'retention-limit');
     },
     forget,
     clear() { for (const key of [...entries.keys()]) evict(key, 'retention-cleared'); },
