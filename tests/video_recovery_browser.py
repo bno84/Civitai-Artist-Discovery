@@ -23,6 +23,7 @@ CHUNK = len(MEDIA) // 25
 PIXEL = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
 requests = Counter()
 disconnected = []
+active_transfers = set()
 lock = threading.Lock()
 stop = threading.Event()
 
@@ -105,7 +106,17 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         try:
             data = MEDIA[start:end + 1]
-            if "stall" in path and attempt == 1:
+            if "pressure-" in path:
+                with lock:
+                    active_transfers.add(path)
+                # Enough initial data to start all players, followed by a long
+                # transfer that would monopolize HTTP/1 connections if parked.
+                self.wfile.write(data[:131072]); self.wfile.flush()
+                for i in range(131072, len(data), 4096):
+                    if stop.wait(.1):
+                        break
+                    self.wfile.write(data[i:i + 4096]); self.wfile.flush()
+            elif "stall" in path and attempt == 1:
                 self.wfile.write(data[:PREFIX]); self.wfile.flush()
                 # Deliberately hang the first connection. A fresh source load succeeds.
                 while not stop.wait(.05):
@@ -126,6 +137,9 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             disconnected.append(path)
+        finally:
+            with lock:
+                active_transfers.discard(path)
 
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -309,6 +323,58 @@ try:
             assert page.locator('.card-video').count() == 0
             page.evaluate("card.releaseVideo();card.remove();document.querySelector('#scroll-space').remove();window.scrollTo(0,0)")
 
+            # Played but incomplete streams must free their connections on scroll
+            # and details suspension. Six retained downloads previously kept the
+            # next player's HTTP/1 request queued, even with preload='none'.
+            recovery_page = page
+            page = browser.new_page(viewport={"width": 1000, "height": 700})
+            page.goto(base)
+            page.wait_for_function('window.ready')
+            for leave in ('scroll', 'details'):
+                prefix = f'pressure-{leave}-{name}'
+                page.evaluate("""prefix => {
+                    window.scrollTo(0,0);const host=document.querySelector('#host');
+                    host.classList.add('grid');host.style.cssText='width:950px;height:440px;display:grid;grid-template-columns:repeat(3,1fr)';
+                    window.pressureCards=Array.from({length:6},(_,i)=>{
+                        const el=document.createElement('article');el.className='creator-card';
+                        el.dataset.imagesActive='1';el.setAttribute('aria-busy','false');
+                        el.innerHTML='<div class="image-stage" style="height:180px"><button class="image-button"><img></button></div>';
+                        host.append(el);const show=attachVideo(el,el.querySelector('img'));
+                        show({id:prefix+i,type:'video',videoUrl:location.origin+'/media/'+prefix+'-'+i+'.mp4'});
+                        el.setVideoVisible(true);return el;
+                    });
+                    const spacer=document.createElement('div');spacer.id='pressure-space';spacer.style.height='1600px';document.body.append(spacer);
+                }""", prefix)
+                page.wait_for_function("pressureCards.every(el=>el.querySelector('video')?.currentTime>1.2)")
+                assert page.evaluate("pressureCards.every(el=>{const v=el.querySelector('video');return v.networkState===2 && v.buffered.end(0)<v.duration-1})")
+                page.evaluate("window.partialPlayers=pressureCards.map(el=>el.querySelector('video'))")
+                if leave == 'scroll':
+                    page.evaluate('window.scrollTo(0,900)')
+                else:
+                    page.evaluate("suspendCards(true);document.querySelector('#details').showModal()")
+                page.wait_for_function("partialPlayers.every(v=>!v.isConnected && !v.getAttribute('src'))")
+                # Starting native media here avoids resuming the gallery while we
+                # measure whether the six old transfers relinquished their slots.
+                foreground = f'foreground-{leave}-{name}'
+                page.evaluate("""mode=>{
+                    const dialog=document.querySelector('#details');if(!dialog.open)dialog.showModal();
+                    showDetail(document.querySelector('#detailImage'),location.origin+'/media/'+mode+'.mp4',mode);
+                }""", foreground)
+                page.wait_for_function("document.querySelector('#detailVideo')?.currentTime>.25", timeout=5000)
+                pressure_paths = [f'/media/{prefix}-{i}.mp4' for i in range(6)]
+                assert all(path in disconnected for path in pressure_paths), disconnected
+                with lock:
+                    assert not any(path in active_transfers for path in pressure_paths), active_transfers
+                assert requests[f'/media/{foreground}.mp4'] == 1
+                page.evaluate("""() => {
+                    pressureCards.forEach(el=>{el.releaseVideo();el.remove()});clearDetail();
+                    const dialog=document.querySelector('#details');if(dialog.open)dialog.close();
+                    suspendCards(false);document.querySelector('#pressure-space').remove();window.scrollTo(0,0);
+                }""")
+            page.close()
+            page = recovery_page
+            page.bring_to_front()
+
             # Two rows of five videos must all survive a details visit. Media is
             # no-store, so count-based eviction would show up as fresh requests.
             # Give this layout its own page, independent of the stalled/error
@@ -397,4 +463,5 @@ print(json.dumps({"browsers": tested, "nativePlayback": True, "slowWithoutReload
                   "scrollAndDetailReuseWithoutNewRequests": True, "retentionExpiry": True,
                   "retentionInvalidation": True, "fastFlickWithoutRequests": True,
                   "wideGridPlayers": 10, "wideGridDetailsWithoutNewRequests": True,
+                  "incompleteStreamsReleaseConnectionsOnScrollAndDetails": True,
                   "posterOnlyNeverLoadsVideo": True, "nativeDetailsCleaned": True}))

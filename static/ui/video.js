@@ -238,6 +238,11 @@ export function createMediaLifecycle({ createVideo, mount, eligible, render, dia
       if (scope?.parked) return true;
       if (!card || !retention || !wanted || !scope?.hasPlayed || scope.restoring || scope.video.seeking ||
           scope.video.readyState < 2 || scope.video.error) return false;
+      const v = scope.video;
+      // Pausing/preload=none does not abort an in-flight media request. Retaining
+      // partial streams can occupy every connection and starve visible players.
+      if (v.networkState !== 1 || !Number.isFinite(v.duration) || v.duration <= 0 ||
+          v.buffered.length !== 1 || v.buffered.start(0) > 0.1 || v.buffered.end(0) < v.duration - 0.1) return false;
       wanted = false; revision++; clearTimers(); remember(); scope.parked = true;
       scope.playRequested = false; scope.video.preload = 'none'; scope.video.pause();
       emit('parked');
