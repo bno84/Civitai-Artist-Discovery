@@ -33,6 +33,7 @@ from discovery.archive_calendar import build_request as archive_build_request
 from discovery.availability import ArtworkAvailability
 from discovery.timemachine import TimeMachine
 from discovery.musicscout import COLLECTIONS, MUSIC_FOCUS, HubBuilding, MusicScout
+from discovery.collectalytics import Collectalytics, NotListed, with_visible_thumbs
 from discovery.history import HistoryArchive, RetryBudgetExhausted, parse_day, previous_local_day
 from discovery.selection import GallerySelection, media_type
 from discovery.oauth import (CALLBACK_PORT, OAuthSetupError, client_info,
@@ -78,6 +79,8 @@ TIME_MACHINE = TimeMachine(DATA_ROOT / "discovery", HISTORY, TASTE)
 # In-memory video queues; they share the same paced request lane.
 MUSIC_SCOUT = MusicScout(HISTORY, social=lambda: music_scout_client(),
                          root=DATA_ROOT / "discovery")
+# Collection statistics, read on request and kept in memory for a few minutes.
+COLLECTALYTICS = Collectalytics(social=lambda: collectalytics_client())
 WRITE_LOCK = threading.RLock()
 ARTWORK_AVAILABILITY = ArtworkAvailability()
 HISTORY.on_block_complete = lambda key, merged: prepare_finished_block(key, merged)
@@ -293,6 +296,13 @@ def music_scout_client() -> SocialClient:
     # Interactive, so outside the shared lane like reactions: the reader is waiting.
     if not connected_or_false():
         raise PermissionError("Sign in to Civitai to load the Music Focus collection")
+    return SocialClient()
+
+
+def collectalytics_client() -> SocialClient:
+    # Interactive, so outside the shared lane: the reader is waiting.
+    if not connected_or_false():
+        raise PermissionError("Sign in to Civitai to read your collections")
     return SocialClient()
 
 
@@ -1606,6 +1616,28 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response({"canAdd": editable, "collections": collections})
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Music Scout collection status", error)
+            return
+        if parsed.path == "/api/collectalytics/collections":
+            try:
+                self.json_response({"collections": COLLECTALYTICS.collections(
+                    connected_user_id(), refresh=query.get("refresh", ["0"])[0] == "1")})
+            except PermissionError as error: self.json_response({"error": str(error)}, 401)
+            except Exception as error: self.internal_error("Collectalytics collections", error)
+            return
+        if parsed.path == "/api/collectalytics/collection":
+            try: collection_id = int(query.get("id", [""])[0])
+            except ValueError:
+                self.json_response({"error": "Choose a collection by its ID"}, 400)
+                return
+            try:
+                report = COLLECTALYTICS.report(connected_user_id(), collection_id,
+                                               refresh=query.get("refresh", ["0"])[0] == "1")
+                hidden_creators, hidden_images = hidden_preferences()
+                self.json_response(with_visible_thumbs(report, HISTORY.visible_levels,
+                                                       hidden_creators, hidden_images))
+            except PermissionError as error: self.json_response({"error": str(error)}, 401)
+            except NotListed as error: self.json_response({"error": str(error)}, 404)
+            except Exception as error: self.internal_error("Collectalytics collection", error)
             return
         if parsed.path == "/api/timemachine/status":
             try:
