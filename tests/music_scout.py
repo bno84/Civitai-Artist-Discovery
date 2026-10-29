@@ -2,12 +2,13 @@
 
 Covers the per-creator cap, the newest-first merge of several music-model feeds, that an
 image row is never served even if a listing returns one, the hidden-content filter, and
-that the playback file is the transcode Civitai keeps the audio track on.
+that the original file is played with the audio-keeping transcode as its fallback.
 """
 
 import test_safety  # Fail closed before any test network request.
 
 from pathlib import Path
+import json
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -56,7 +57,8 @@ assert names == ["Busy", "Busy", "Quiet", "Other"], names
 assert page["exhausted"] is True, page
 assert all(request["browsingLevel"] == 3 for request in archive.requests), archive.requests
 first = page["items"][0]
-assert "/transcode=true,width=768,optimized=true/" in first["videoUrl"], first
+assert "/original=true/" in first["videoUrl"], first
+assert "/transcode=true,width=768,optimized=true/" in first["fallbackUrl"], first
 assert first["stillUrl"].endswith(".jpeg") and "anim=false" in first["stillUrl"], first
 assert first["civitaiUrl"].endswith("/images/10"), first
 
@@ -129,7 +131,9 @@ assert page["exhausted"], page
 entry = page["items"][0]
 assert entry["username"] == "Old" and entry["stats"]["reactionCount"] == 5, entry
 assert entry["videoUrl"] == ("https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/key-7/"
-                             "transcode=true,width=768,optimized=true/key-7.mp4"), entry
+                             "original=true/key-7.mp4"), entry
+assert entry["fallbackUrl"] == ("https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/key-7/"
+                                "transcode=true,width=768,optimized=true/key-7.mp4"), entry
 assert entry["stillUrl"].endswith("/key-7.jpeg") and "anim=false" in entry["stillUrl"], entry
 
 
@@ -242,6 +246,17 @@ with tempfile.TemporaryDirectory() as folder:
     later = MusicScout(HubArchive(), social=lambda: HubSocial(), root=Path(folder))
     assert [item["id"] for item in later.page("mf-hub", 0, 10, per_creator=1)["items"]] == [901, 911]
     assert later.archive.users == [], later.archive.users
+    # Lists saved when the transcode was the playback file are served as originals.
+    with later.viewed_lock, later.viewed_db:
+        saved = later.viewed_db.execute("SELECT username_key, entries FROM hub_latest").fetchall()
+        for key, entries in saved:
+            entries = [{**entry, "videoUrl": entry["fallbackUrl"]} for entry in json.loads(entries)]
+            entries = [{k: v for k, v in entry.items() if k != "fallbackUrl"} for entry in entries]
+            later.viewed_db.execute("UPDATE hub_latest SET entries = ? WHERE username_key = ?",
+                                    (json.dumps(entries), key))
+    served = later.page("mf-hub", 0, 10, per_creator=1)["items"]
+    assert all("/original=true/" in item["videoUrl"] and "transcode=true" in item["fallbackUrl"]
+               for item in served), served
     # Another collection's hub shares the saved lists of creators both have, and names
     # its own collection as the source.
     museum = later.page("museum-hub", 0, 10, per_creator=1)["items"]
