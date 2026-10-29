@@ -150,7 +150,7 @@ try:
         assert shown == QUEUE[2]["videoUrl"] and spare == QUEUE[3]["videoUrl"], (shown, spare)
         assert page.locator("#msCreator").text_content() == QUEUE[2]["username"]
 
-        # A second on screen marks it viewed, once.
+        # Over half a second on screen marks it viewed, once.
         page.wait_for_function("() => document.querySelectorAll('#msStrip .ms-thumb.viewed').length === 3")
         assert requests["viewed"] == [7003], requests["viewed"]
 

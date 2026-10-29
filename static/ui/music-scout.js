@@ -10,7 +10,7 @@ const PREFETCH_AHEAD = 6;
 const STATE_KEY = 'civitaiMusicScout';
 // A video counts as viewed once it has been the current one this long. Holding → to flick
 // past a run of thumbnails should not mark them all.
-const VIEWED_AFTER_MS = 1000;
+const VIEWED_AFTER_MS = 600;
 // How far a newly opened queue looks ahead for the first video not viewed yet.
 const SKIP_VIEWED_PAGES = 10;
 // Civitai's CDN sometimes hangs on a file rather than failing. A video or thumbnail that
