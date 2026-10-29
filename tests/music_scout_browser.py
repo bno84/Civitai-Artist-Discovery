@@ -39,6 +39,8 @@ def video(index):
 
 
 QUEUE = [video(index) for index in range(1, TOTAL + 1)]
+# Every file here fails to load; only this one has a transcode to fall back to.
+QUEUE[1]["fallbackUrl"] = QUEUE[1]["videoUrl"].replace("/transcode=", "/fallback,transcode=")
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), partial(StaticHandler, directory=str(ROOT / "static")))
 threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -213,6 +215,14 @@ try:
         page.keyboard.press("Home")
         counter(page, "1 / 20+")
 
+        # An original the browser cannot play is swapped for its transcode, once.
+        page.keyboard.press("ArrowRight")
+        counter(page, "2 / 20+")
+        page.wait_for_function("src => [...document.querySelectorAll('#msScreen video')].some(video => !video.hidden && video.getAttribute('src') === src)",
+                               arg=QUEUE[1]["fallbackUrl"])
+        page.keyboard.press("ArrowLeft")
+        counter(page, "1 / 20+")
+
         # The narrow layout keeps the player and strip usable.
         page.set_viewport_size({"width": 420, "height": 860})
         page.wait_for_timeout(200)
@@ -231,4 +241,4 @@ try:
 finally:
     server.shutdown()
 
-print("PASS: Music Scout tab, queue open past viewed videos, buffering, reactions, collection markers, Music Focus add, tab pause, reload restore and sign-out silence")
+print("PASS: Music Scout tab, queue open past viewed videos, buffering, reactions, collection markers, Music Focus add, tab pause, reload restore, transcode fallback and sign-out silence")

@@ -264,6 +264,10 @@ def video_playback_url(url: str, width: int = 450) -> str:
     return _cdn_transform(url, f"transcode=true,width={width},optimized=true")
 
 
+def video_original_url(url: str) -> str:
+    return _cdn_transform(url, "original=true")
+
+
 class HistoryArchive:
     @staticmethod
     def archive_key(value: str, segment: str = "all") -> str:
