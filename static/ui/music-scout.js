@@ -73,9 +73,14 @@ export function mountMusicScout() {
       localStorage.setItem(AUDIO_KEY, JSON.stringify({ muted: state.muted, volume: state.volume }));
     });
     video.addEventListener('error', () => {
-      if (video !== current || !video.getAttribute('src')) return;
+      if (!video.getAttribute('src') || fallBack(video)) return;
+      if (video !== current) return;
       clearTimeout(loadTimer);
       showVideoError('This video could not be played. Press → for the next one.');
+    });
+    // A browser without an HEVC decoder may load the file as sound over a blank picture.
+    video.addEventListener('loadedmetadata', () => {
+      if (video.getAttribute('src') && !video.videoWidth) fallBack(video);
     });
     video.addEventListener('canplay', () => {
       if (video !== current) return;
@@ -150,6 +155,19 @@ export function mountMusicScout() {
     video.preload = preload;
     video.src = item.videoUrl;
     video.dataset.itemId = String(item.id);
+  }
+
+  // Originals are played as uploaded; one the browser cannot decode gets Civitai's
+  // transcode instead, for the rest of this queue.
+  function fallBack(video) {
+    const item = state.items.find(entry => String(entry.id) === video.dataset.itemId);
+    if (!item?.fallbackUrl || item.videoUrl === item.fallbackUrl) return false;
+    item.videoUrl = item.fallbackUrl;
+    const preload = video.preload;
+    delete video.dataset.itemId;
+    load(video, item, preload);
+    if (video === current && state.active) { play(video); watchLoad(video, item); }
+    return true;
   }
 
   function play(video) {
