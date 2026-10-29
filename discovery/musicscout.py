@@ -11,7 +11,12 @@ Measured against civitai.red in Oct 2026:
 - ``modelId`` returns work that attributes any version of that model, and combines with
   ``type`` and ``browsingLevel``. It takes one id: ``modelId=a,b`` is HTTP 400, so several
   models are separate feeds merged here, newest first.
-- The ``transcode=true,width=N,optimized=true`` playback file keeps the AAC audio track.
+- The original file is served as a 301 to the blob store, with the first byte in under a
+  second. A 768-wide ``transcode=true,width=N,optimized=true`` file took 4 to 10 seconds on
+  videos posted minutes earlier; 450 wide starts at once but is soft at player size.
+  Originals are mostly H.264 with AAC, a median 7 MB and up to about 70 MB. About one in
+  ten is HEVC, which a browser without an HEVC decoder cannot show, so the transcode, which
+  keeps the AAC track, is the fallback.
 - ``anim=false,width=N`` redirects some videos to their original MP4 (30 MB and more),
   while the listing's own ``thumbnail.url`` is a JPEG for the same videos, so it is the
   still used here.
@@ -37,7 +42,7 @@ import urllib.parse
 import urllib.request
 
 from .civitai import normalize
-from .history import video_playback_url, video_still_url
+from .history import video_original_url, video_playback_url, video_still_url
 from .site import API_URL, image_url, profile_url
 
 
@@ -193,6 +198,14 @@ def _still(raw: dict, url: str) -> str:
     return str(thumbnail.get("url") or "") or video_still_url(url, STILL_WIDTH)
 
 
+def _playback(url: str) -> dict:
+    """The original file to play, and the transcode for a browser that cannot decode it.
+
+    Also applied to saved hub entries, which may hold a URL from before this choice.
+    """
+    return {"videoUrl": video_original_url(url), "fallbackUrl": video_playback_url(url, PLAYBACK_WIDTH)}
+
+
 def video_entry(raw: dict, source: str | None = None) -> dict | None:
     """The playback view of one listing row, or None for anything that is not a video."""
     if raw.get("type") != "video" or not raw.get("url"):
@@ -208,7 +221,7 @@ def video_entry(raw: dict, source: str | None = None) -> dict | None:
         "width": item["width"], "height": item["height"],
         "browsingLevel": item["browsingLevel"], "baseModel": item["baseModel"],
         "stats": item["stats"], "stillUrl": _still(raw, item["url"]),
-        "videoUrl": video_playback_url(item["url"], PLAYBACK_WIDTH),
+        **_playback(item["url"]),
     }
     if source:
         entry["source"] = source
@@ -612,8 +625,8 @@ class MusicScout:
                 raise HubBuilding(job["done"], job["total"], job["name"])
             rows = self._hub_rows()
         # Saved entries are shared between hubs, so the source is named as they are served.
-        entries = [{**entry, "source": name} for key in creators if key in rows
-                   for entry in json.loads(rows[key][4])]
+        entries = [{**entry, **_playback(entry["videoUrl"]), "source": name}
+                   for key in creators if key in rows for entry in json.loads(rows[key][4])]
         return sorted(entries, key=lambda entry: str(entry.get("createdAt") or ""), reverse=True)
 
     def mark_member(self, collection_id: int, image_id: int) -> None:

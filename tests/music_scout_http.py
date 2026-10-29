@@ -142,7 +142,8 @@ with patch.object(server, "MUSIC_SCOUT", scout), \
         assert [item["id"] for item in page["items"]] == [801, 803], page
         assert archive.requests[0]["browsingLevel"] == sum(server.HISTORY.visible_levels), archive.requests
         assert archive.requests[0]["type"] == "video", archive.requests
-        assert "transcode=true,width=768,optimized=true" in page["items"][0]["videoUrl"], page
+        assert "/original=true/" in page["items"][0]["videoUrl"], page
+        assert "transcode=true,width=768,optimized=true" in page["items"][0]["fallbackUrl"], page
 
         assert call("GET", "/api/music/queue?queue=images")[0] == 400
         status, answer = call("GET", "/api/music/queue?queue=music-focus")
