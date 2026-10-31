@@ -1,0 +1,645 @@
+"""Rapid-fire video queues for finding work with music.
+
+Music can only ride on a video, so every queue asks Civitai for ``type=video`` and never
+requests an image row. Queues are built lazily: a page is fetched only when the reader is
+close to the end of what is already loaded, and everything is held in memory, because a
+queue is a browsing session rather than something worth keeping.
+
+Measured against civitai.red in Oct 2026:
+
+- ``type=video`` on ``/api/v1/images`` returns only videos; ``types=video`` is ignored.
+- ``modelId`` returns work that attributes any version of that model, and combines with
+  ``type`` and ``browsingLevel``. It takes one id: ``modelId=a,b`` is HTTP 400, so several
+  models are separate feeds merged here, newest first.
+- The original file is served as a 301 to the blob store, with the first byte in under a
+  second. A 768-wide ``transcode=true,width=N,optimized=true`` file took 4 to 10 seconds on
+  videos posted minutes earlier; 450 wide starts at once but is soft at player size.
+  Originals are mostly H.264 with AAC, a median 7 MB and up to about 70 MB. About one in
+  ten is HEVC, which a browser without an HEVC decoder cannot show, so the transcode, which
+  keeps the AAC track, is the fallback.
+- ``anim=false,width=N`` redirects some videos to their original MP4 (30 MB and more),
+  while the listing's own ``thumbnail.url`` is a JPEG for the same videos, so it is the
+  still used here.
+- A collection in "Recently Added" order is only available from the signed-in tRPC
+  ``image.getInfinite``. The public API ignores ``collectionId``: without a sort it serves
+  the global most-reacted feed, and with ``sort=Newest`` the global newest feed.
+- tRPC rows carry ``metadata.audio``, but it is not reliable: a video marked
+  ``audio: false`` had an AAC track in both its original and transcoded files.
+"""
+
+from __future__ import annotations
+
+import threading
+
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+import json
+from pathlib import Path
+import sqlite3
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+from .civitai import normalize
+from .history import video_original_url, video_playback_url, video_still_url
+from .site import API_URL, image_url, profile_url
+
+
+PAGE_SIZE = 100
+# Bounds the requests one call may make. A strict per-creator cap over a feed dominated
+# by a few prolific uploaders can otherwise page for a long time to fill one screen.
+MAX_PAGES_PER_CALL = 4
+PLAYBACK_WIDTH = 768
+STILL_WIDTH = 450
+PER_CREATOR_DEFAULT = 3
+PER_CREATOR_MAX = 50
+
+# Audio generation models whose attributed videos are likely to carry music. ``modelId``
+# covers every version, so a new release of the same model needs no change here.
+MUSIC_MODELS = (
+    {"modelId": 2944296, "name": "YuE2 3B", "url": "https://civitai.red/models/2944296"},
+    {"modelId": 2549270, "name": "ACE-Step Audio Gen", "url": "https://civitai.red/models/2549270"},
+    {"modelId": 2855966, "name": "MiniMax Music 3", "url": "https://civitai.red/models/2855966"},
+)
+
+# The account's own curated collection. Its owner can add a video from any queue.
+MUSIC_FOCUS = {"key": "music-focus", "collectionId": 17980935, "name": "Music Focus 🎸",
+               "icon": "🎸", "url": "https://civitai.red/collections/17980935",
+               # The comment the owner leaves on every video they add, in the markup
+               # Civitai's own editor produced for it, minus its rel="ugc" and with the
+               # collection's newest-first sort in the link. The link to the collection is the
+               # point of the comment. It is posted exactly as is; anything different is
+               # written on Civitai itself.
+               "commentHtml": '<p>Your track has <a target="_blank" '
+                              'href="https://civitai.red/collections/17980935?sort=Recently+Added"><strong>Music '
+                              'Focus</strong> 🎸</a> and is added to the collection! 🎧 Give it '
+                              'a listen and share more jams if you like.</p>'}
+# Someone else's curated collection of great videos, shown read-only.
+H3_MUSEUM = {"key": "h3-museum", "collectionId": 18403457, "name": "H3 Movies Museum 🎬",
+             "icon": "🎬", "url": "https://civitai.red/collections/18403457"}
+# Each shows its membership next to the reactions, and has its own queue and hub.
+COLLECTIONS = (MUSIC_FOCUS, H3_MUSEUM)
+COLLECTION_BY_KEY = {collection["key"]: collection for collection in COLLECTIONS}
+# Membership is read from the collection itself, so anyone signed in sees the same
+# answer the owner does. Reread at most this often; an add made here updates it at once.
+COLLECTION_TTL_SECONDS = 600
+COLLECTION_PAGE_SIZE = 200
+COLLECTION_MAX_PAGES = 50
+# A hub (MF hub and the like): the newest videos of each creator in a collection. The
+# saved lists are per creator, so collections sharing a creator share the reads. Two
+# public reads keep that list:
+#
+# - Per creator, the creator's latest few videos: complete, one request each. 112
+#   creators take about 8 seconds four at a time when Civitai has nothing cached. This
+#   runs for creators with nothing saved, and as a fallback.
+# - The global newest-videos feed, filtered to these creators. Anything a creator posted
+#   after their list was saved has to appear in it after that moment, so catching up is
+#   only the pages since the last read: 200 PG/PG-13 videos span about five hours. It
+#   cannot replace the per-creator read: a creator whose newest video is a week old is
+#   some 35 sequential pages deep, and a third had posted nothing in two weeks.
+#
+# Saved results are reused only while this fresh; after that they are caught up before
+# serving, since a stale "newest" list misses exactly what the queue is for.
+HUB_TTL_SECONDS = 300
+# A catch-up reaching further back than this rereads every creator instead.
+HUB_CATCHUP_PAGES = 15
+# Overlap with the previous read, for videos the feed lists a little late.
+HUB_CATCHUP_MARGIN_SECONDS = 900
+# Fetched per creator even when the cap is lower, so raising it a little needs no refetch.
+HUB_FETCH_MIN = 5
+# The reader is waiting, so this runs a few requests at a time outside the shared lane:
+# 111 creators took 84 seconds one by one on the lane and about one second this way.
+HUB_WORKERS = 4
+HUB_USER_AGENT = "CivitaiArtistDiscovery/1.0 (local artist discovery app)"
+CDN_ROOT = "https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA"
+
+QUEUES = (
+    {"id": "per-creator", "name": "Latest, a few per creator",
+     "description": "Newest videos, capped per creator so one busy uploader cannot fill the queue.",
+     "perCreator": True},
+    {"id": "music-models", "name": "Music model attributed",
+     "description": "Newest videos that credit a music generation model.",
+     "models": [model["name"] for model in MUSIC_MODELS]},
+    {"id": "latest", "name": "Latest videos",
+     "description": "Every new video, newest first."},
+    {"id": "music-focus", "name": MUSIC_FOCUS["name"],
+     "description": "Your Music Focus collection, most recently added first. Needs sign-in.",
+     "signIn": True, "collection": "music-focus"},
+    {"id": "mf-hub", "name": "MF hub",
+     "description": "Newest videos from creators who have been collected in Music Focus, "
+                    "capped per creator. Needs sign-in.",
+     "perCreator": True, "signIn": True, "hub": "music-focus"},
+    {"id": "h3-museum", "name": H3_MUSEUM["name"],
+     "description": "Sillycat83's collection of great videos, most recently added first. "
+                    "Needs sign-in.",
+     "signIn": True, "collection": "h3-museum"},
+    {"id": "museum-hub", "name": "Museum hub",
+     "description": "Newest videos from creators collected in H3 Movies Museum, capped per "
+                    "creator. Needs sign-in.",
+     "perCreator": True, "signIn": True, "hub": "h3-museum"},
+)
+PER_CREATOR_QUEUES = {queue["id"] for queue in QUEUES if queue.get("perCreator")}
+
+
+def public_listing(params: dict, attempts: int = 3) -> dict:
+    """One public /api/v1/images read outside the shared lane, for the parallel build."""
+    request = urllib.request.Request(f"{API_URL}?{urllib.parse.urlencode(params)}",
+                                     headers={"Accept": "application/json",
+                                              "User-Agent": HUB_USER_AGENT})
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            if (error.code != 429 and error.code < 500) or attempt == attempts - 1:
+                raise
+            retry = error.headers.get("Retry-After")
+            time.sleep(float(retry) if retry and retry.isdigit() else 2.0 * (attempt + 1))
+        except (TimeoutError, urllib.error.URLError):
+            if attempt == attempts - 1:
+                raise
+            time.sleep(2.0 * (attempt + 1))
+    raise RuntimeError("unreachable")
+
+
+def _feed_position(cursor: object, items: list) -> float | None:
+    """How far back, as a Unix time, a newest-first feed page has reached.
+
+    The feed's cursor is ``feed:<milliseconds>:<id>`` for the ordering time, which can be
+    later than createdAt; the page's oldest createdAt stands in when it is not.
+    """
+    if isinstance(cursor, str) and cursor.startswith("feed:"):
+        try:
+            return int(cursor.split(":")[1]) / 1000
+        except (IndexError, ValueError):
+            pass
+    times = []
+    for raw in items:
+        try:
+            times.append(datetime.fromisoformat(str(raw.get("createdAt")).replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            continue
+    return min(times) if times else None
+
+
+class HubBuilding(Exception):
+    """A hub has no saved videos yet for some creators; they are being read now."""
+
+    def __init__(self, done: int, total: int, name: str):
+        super().__init__(f"Reading {name} creators")
+        self.done, self.total, self.name = done, total, name
+
+QUEUE_BY_ID = {queue["id"]: queue for queue in QUEUES}
+
+
+def _still(raw: dict, url: str) -> str:
+    thumbnail = raw.get("thumbnail") if isinstance(raw.get("thumbnail"), dict) else {}
+    return str(thumbnail.get("url") or "") or video_still_url(url, STILL_WIDTH)
+
+
+def _playback(url: str) -> dict:
+    """The original file to play, and the transcode for a browser that cannot decode it.
+
+    Also applied to saved hub entries, which may hold a URL from before this choice.
+    """
+    return {"videoUrl": video_original_url(url), "fallbackUrl": video_playback_url(url, PLAYBACK_WIDTH)}
+
+
+def video_entry(raw: dict, source: str | None = None) -> dict | None:
+    """The playback view of one listing row, or None for anything that is not a video."""
+    if raw.get("type") != "video" or not raw.get("url"):
+        return None
+    try:
+        item = normalize(raw)
+    except (TypeError, ValueError, KeyError):
+        return None
+    entry = {
+        "id": item["id"], "postId": item["postId"], "username": item["username"],
+        "profileUrl": profile_url(item["username"]),
+        "createdAt": item["createdAt"], "civitaiUrl": image_url(item["id"]),
+        "width": item["width"], "height": item["height"],
+        "browsingLevel": item["browsingLevel"], "baseModel": item["baseModel"],
+        "stats": item["stats"], "stillUrl": _still(raw, item["url"]),
+        **_playback(item["url"]),
+    }
+    if source:
+        entry["source"] = source
+    return entry
+
+
+def collection_entry(raw: dict) -> dict | None:
+    """The playback view of one signed-in ``image.getInfinite`` row.
+
+    These rows name the file by its CDN key rather than a URL, nest the creator under
+    ``user`` and report stats as ``*AllTime``, so they are mapped onto the shape the
+    public listing produces before the shared conversion runs.
+    """
+    key = str(raw.get("url") or "")
+    if raw.get("type") != "video" or not key or "/" in key:
+        return None
+    stats = raw.get("stats") if isinstance(raw.get("stats"), dict) else {}
+    quoted = urllib.parse.quote(key)
+    listing = {
+        "id": raw.get("id"), "postId": raw.get("postId"), "type": "video",
+        "username": (raw.get("user") or {}).get("username") or "Unknown",
+        "createdAt": raw.get("createdAt"), "width": raw.get("width"), "height": raw.get("height"),
+        "browsingLevel": raw.get("nsfwLevel"), "baseModel": raw.get("baseModel"),
+        "url": f"{CDN_ROOT}/{quoted}/original=true/{quoted}.mp4",
+        "thumbnail": {"url": f"{CDN_ROOT}/{quoted}/anim=false,transcode=true,optimized=true,"
+                             f"width={STILL_WIDTH}/{quoted}.jpeg"},
+        "stats": {name: stats.get(f"{name}AllTime") or 0 for name in
+                  ("likeCount", "heartCount", "laughCount", "cryCount", "commentCount")},
+    }
+    return video_entry(listing)
+
+
+class Feed:
+    """One Civitai listing, paged newest first."""
+
+    def __init__(self, request, params: dict, source: str | None = None):
+        self.request = request
+        self.params = params
+        self.source = source
+        self.cursor = None
+        self.buffer: list[dict] = []
+        self.exhausted = False
+
+    def fetch(self) -> None:
+        params = {**self.params, "type": "video", "sort": "Newest",
+                  "limit": PAGE_SIZE, "withMeta": "false"}
+        if self.cursor:
+            params["cursor"] = self.cursor
+        payload, _ = self.request(params)
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        cursor = (payload.get("metadata") or {}).get("nextCursor")
+        self.buffer.extend(entry for entry in (video_entry(raw, self.source) for raw in items)
+                           if entry)
+        # A page with no rows ends the feed even if a cursor came back, so a misbehaving
+        # cursor cannot spin forever.
+        self.exhausted = not cursor or not items
+        self.cursor = cursor
+
+
+class CollectionFeed(Feed):
+    """One collection, most recently added first, read through the signed-in client."""
+
+    def __init__(self, social, collection_id: int, mask: int):
+        super().__init__(None, {})
+        self.social = social
+        self.collection_id = collection_id
+        self.mask = mask
+
+    def fetch(self) -> None:
+        payload = {"collectionId": self.collection_id, "sort": "Recently Added",
+                   "period": "AllTime", "types": ["video"], "limit": PAGE_SIZE,
+                   "browsingLevel": self.mask}
+        if self.cursor:
+            payload["cursor"] = self.cursor
+        value = self.social().query("image.getInfinite", payload)
+        value = value if isinstance(value, dict) else {}
+        items = value.get("items") if isinstance(value.get("items"), list) else []
+        self.buffer.extend(entry for entry in (collection_entry(raw) for raw in items) if entry)
+        self.cursor = value.get("nextCursor")
+        self.exhausted = not self.cursor or not items
+
+
+class Queue:
+    """Loaded entries plus the feeds that extend them."""
+
+    def __init__(self, feeds: list[Feed], per_creator: int | None = None,
+                 allow=lambda entry: True):
+        self.feeds = feeds
+        self.per_creator = per_creator
+        self.allow = allow
+        self.items: list[dict] = []
+        self.seen: set[int] = set()
+        self.counts: dict[str, int] = {}
+        self.lock = threading.Lock()
+
+    @property
+    def exhausted(self) -> bool:
+        return all(feed.exhausted and not feed.buffer for feed in self.feeds)
+
+    def _accept(self, entry: dict) -> None:
+        if entry["id"] in self.seen or not self.allow(entry):
+            return
+        key = entry["username"].casefold()
+        if self.per_creator and self.counts.get(key, 0) >= self.per_creator:
+            return
+        self.seen.add(entry["id"])
+        self.counts[key] = self.counts.get(key, 0) + 1
+        self.items.append(entry)
+
+    def _next(self, budget: list[int]) -> dict | None:
+        """The newest buffered entry across feeds, fetching where a feed has run dry.
+
+        A feed with an empty buffer is refilled before choosing, otherwise an older entry
+        from another feed could be emitted ahead of a newer one still unfetched.
+        """
+        for feed in self.feeds:
+            if not feed.buffer and not feed.exhausted:
+                if budget[0] <= 0:
+                    return None
+                budget[0] -= 1
+                feed.fetch()
+        ready = [feed for feed in self.feeds if feed.buffer]
+        if not ready:
+            return None
+        newest = max(ready, key=lambda feed: str(feed.buffer[0].get("createdAt") or ""))
+        return newest.buffer.pop(0)
+
+    def ensure(self, count: int) -> None:
+        with self.lock:
+            budget = [MAX_PAGES_PER_CALL]
+            while len(self.items) < count:
+                entry = self._next(budget)
+                if entry is None:
+                    return
+                self._accept(entry)
+
+    def page(self, offset: int, limit: int) -> dict:
+        self.ensure(offset + limit)
+        with self.lock:
+            return {"items": self.items[offset:offset + limit], "total": len(self.items),
+                    "exhausted": self.exhausted}
+
+
+class MusicScout:
+    """The queues in use, keyed by everything that changes what they contain."""
+
+    def __init__(self, archive, social=None, root: Path | None = None):
+        # The archive's request path carries the shared API lane and adaptive pacing, so a
+        # queue page waits its turn behind a day build rather than racing it.
+        self.archive = archive
+        # Returns a signed-in client, or raises PermissionError when there is none.
+        self.social = social
+        self.queues: dict[tuple, Queue] = {}
+        # Every video handed to the page, by id. Reacting is limited to these, the same
+        # way it is limited to collected images elsewhere, and a reaction updates the
+        # counts here so a revisit shows them.
+        self.served: dict[int, dict] = {}
+        self.lock = threading.Lock()
+        # Per collection id: when it was read, its video ids, and its creators' usernames
+        # by casefolded key, all from the same read.
+        self.members: dict[int, tuple[float, set[int], dict[str, str]]] = {}
+        self.member_locks = {collection["collectionId"]: threading.Lock()
+                             for collection in COLLECTIONS}
+        # One reading job at a time, whichever hub asked: the saved lists are shared.
+        self.hub_job = {"running": False, "done": 0, "total": 0, "error": None, "name": ""}
+        self.hub_catchup_lock = threading.Lock()
+        self.hub_lock = threading.Lock()
+        # Which videos the reader has already watched, kept across sessions so a queue
+        # can open on the first one not seen yet. Its own small database: it is personal
+        # history, unrelated to the daily archive or the taste profile.
+        if root is not None:
+            root.mkdir(parents=True, exist_ok=True)
+        self.viewed_db = sqlite3.connect(":memory:" if root is None else root / "musicscout.sqlite3",
+                                         check_same_thread=False)
+        self.viewed_lock = threading.Lock()
+        with self.viewed_lock, self.viewed_db:
+            self.viewed_db.execute("CREATE TABLE IF NOT EXISTS viewed("
+                                   "image_id INTEGER PRIMARY KEY, viewed_at TEXT NOT NULL)")
+            self.viewed_db.execute("CREATE TABLE IF NOT EXISTS hub_latest("
+                                   "username_key TEXT PRIMARY KEY, username TEXT NOT NULL, "
+                                   "mask INTEGER NOT NULL, fetch_limit INTEGER NOT NULL, "
+                                   "fetched_at REAL NOT NULL, entries TEXT NOT NULL)")
+
+    def viewed_ids(self, image_ids) -> set[int]:
+        ids = [int(value) for value in image_ids]
+        if not ids:
+            return set()
+        with self.viewed_lock:
+            marks = ",".join("?" * len(ids))
+            return {row[0] for row in self.viewed_db.execute(
+                f"SELECT image_id FROM viewed WHERE image_id IN ({marks})", ids)}
+
+    def mark_viewed(self, image_id: int) -> None:
+        with self.viewed_lock, self.viewed_db:
+            self.viewed_db.execute("INSERT OR IGNORE INTO viewed(image_id, viewed_at) VALUES(?, ?)",
+                                   (int(image_id), time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
+
+    def _build(self, queue_id: str, per_creator: int, mask: int, allow) -> Queue:
+        request = self.archive._request
+        base = {"browsingLevel": mask}
+        if queue_id == "music-models":
+            return Queue([Feed(request, {**base, "modelId": model["modelId"]}, model["name"])
+                          for model in MUSIC_MODELS], allow=allow)
+        queue = QUEUE_BY_ID[queue_id]
+        if "collection" in queue:
+            collection = COLLECTION_BY_KEY[queue["collection"]]
+            if self.social is None:
+                raise PermissionError(f"Sign in to Civitai to load {collection['name']}")
+            self.social()  # Fail now, not on the first page, when nobody is signed in.
+            return Queue([CollectionFeed(self.social, collection["collectionId"], mask)],
+                         allow=allow)
+        if queue_id == "per-creator":
+            return Queue([Feed(request, base)], per_creator=per_creator, allow=allow)
+        if "hub" in queue:
+            if self.social is None:
+                raise PermissionError(f"Sign in to Civitai to load {queue['name']}")
+            feed = Feed(None, {})
+            feed.buffer = self.hub_entries(COLLECTION_BY_KEY[queue["hub"]], per_creator, mask)
+            feed.exhausted = True
+            return Queue([feed], per_creator=per_creator, allow=allow)
+        return Queue([Feed(request, base)], allow=allow)
+
+    def page(self, queue_id: str, offset: int = 0, limit: int = 20,
+             per_creator: int = PER_CREATOR_DEFAULT, levels=(1, 2), allow=lambda entry: True,
+             refresh: bool = False) -> dict:
+        if queue_id not in QUEUE_BY_ID:
+            raise ValueError("Unknown queue")
+        per_creator = min(PER_CREATOR_MAX, max(1, int(per_creator)))
+        offset, limit = max(0, int(offset)), min(100, max(1, int(limit)))
+        mask = sum(levels)
+        key = (queue_id, per_creator if queue_id in PER_CREATOR_QUEUES else None, mask)
+        with self.lock:
+            if refresh or key not in self.queues:
+                self.queues[key] = self._build(queue_id, per_creator, mask, allow)
+            queue = self.queues[key]
+        queue.allow = allow
+        result = queue.page(offset, limit)
+        with self.lock:
+            self.served.update((entry["id"], entry) for entry in result["items"])
+        viewed = self.viewed_ids(entry["id"] for entry in result["items"])
+        # A copy per answer: the flag belongs to this moment, not to the shared entry.
+        result["items"] = [{**entry, "viewed": entry["id"] in viewed} for entry in result["items"]]
+        return {"queue": queue_id, "offset": offset, **result}
+
+    def collection_ids(self, collection_id: int) -> set[int]:
+        """Every video id in a collection. Needs a signed-in client, but not the owner's."""
+        return set(self._collection_listing(collection_id)[1])
+
+    def collection_creators(self, collection_id: int) -> dict[str, str]:
+        """Everyone with a video in a collection, by casefolded username."""
+        return dict(self._collection_listing(collection_id)[2])
+
+    def _collection_listing(self, collection_id: int) -> tuple[float, set[int], dict[str, str]]:
+        with self.member_locks[collection_id]:
+            cached = self.members.get(collection_id)
+            if cached is not None and time.monotonic() - cached[0] < COLLECTION_TTL_SECONDS:
+                return cached
+            client = self.social()
+            ids: set[int] = set()
+            creators: dict[str, str] = {}
+            cursor = None
+            for _ in range(COLLECTION_MAX_PAGES):
+                payload = {"collectionId": collection_id, "sort": "Recently Added",
+                           "period": "AllTime", "types": ["video"], "limit": COLLECTION_PAGE_SIZE,
+                           "browsingLevel": 31}
+                if cursor:
+                    payload["cursor"] = cursor
+                value = client.query("image.getInfinite", payload)
+                value = value if isinstance(value, dict) else {}
+                items = value.get("items") if isinstance(value.get("items"), list) else []
+                for row in items:
+                    if not isinstance(row, dict) or not row.get("id"):
+                        continue
+                    ids.add(int(row["id"]))
+                    name = str((row.get("user") or {}).get("username") or "").strip()
+                    if name:
+                        creators.setdefault(name.casefold(), name)
+                cursor = value.get("nextCursor")
+                if not cursor or not items:
+                    break
+            self.members[collection_id] = (time.monotonic(), ids, creators)
+            return self.members[collection_id]
+
+    # -- hubs ---------------------------------------------------------------------------
+
+    def _hub_rows(self) -> dict[str, tuple]:
+        with self.viewed_lock:
+            return {row[0]: row[1:] for row in self.viewed_db.execute(
+                "SELECT username_key, username, mask, fetch_limit, fetched_at, entries FROM hub_latest")}
+
+    def _hub_fetch(self, username: str, mask: int, limit: int) -> list[dict]:
+        params = {"username": username, "type": "video", "sort": "Newest", "limit": limit,
+                  "browsingLevel": mask, "withMeta": "false"}
+        payload = public_listing(params)
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        return [entry for entry in (video_entry(raw) for raw in items) if entry]
+
+    def _hub_store(self, key: str, username: str, mask: int, limit: int) -> None:
+        try:
+            entries = self._hub_fetch(username, mask, limit)
+        except Exception:
+            # A renamed or deleted account answers with an error; it simply has no
+            # videos here rather than stopping everyone else's.
+            entries = []
+        with self.viewed_lock, self.viewed_db:
+            self.viewed_db.execute("INSERT OR REPLACE INTO hub_latest VALUES(?,?,?,?,?,?)",
+                                   (key, username, mask, limit, time.time(), json.dumps(entries)))
+        with self.hub_lock:
+            self.hub_job["done"] += 1
+
+    def _hub_run(self, targets: list[tuple[str, str]], mask: int, limit: int) -> None:
+        try:
+            with ThreadPoolExecutor(max_workers=HUB_WORKERS, thread_name_prefix="mf-hub") as pool:
+                list(pool.map(lambda target: self._hub_store(*target, mask, limit), targets))
+        except Exception as error:  # noqa: BLE001 -- reported through HubBuilding
+            with self.hub_lock:
+                self.hub_job["error"] = str(error)
+        finally:
+            with self.hub_lock:
+                self.hub_job["running"] = False
+
+    def _hub_start(self, name: str, targets: list[tuple[str, str]], mask: int, limit: int) -> dict:
+        with self.hub_lock:
+            if not self.hub_job["running"]:
+                self.hub_job = {"running": True, "done": 0, "total": len(targets), "error": None,
+                                "name": name}
+                threading.Thread(target=self._hub_run, args=(targets, mask, limit),
+                                 name="mf-hub", daemon=True).start()
+            return dict(self.hub_job)
+
+    def _hub_catch_up(self, creators: dict[str, str], rows: dict[str, tuple], mask: int,
+                      since: float) -> bool:
+        """Merge what these creators posted since ``since`` from the global feed.
+
+        Returns False, changing nothing, when that is further back than the feed is
+        worth paging.
+        """
+        started = time.time()
+        found: dict[str, list[dict]] = {}
+        cursor = None
+        for _ in range(HUB_CATCHUP_PAGES):
+            params = {"type": "video", "sort": "Newest", "limit": 200, "browsingLevel": mask,
+                      "withMeta": "false"}
+            if cursor:
+                params["cursor"] = cursor
+            payload = public_listing(params)
+            items = payload.get("items") if isinstance(payload.get("items"), list) else []
+            for raw in items:
+                key = str(raw.get("username") or "").casefold()
+                if key in creators and (entry := video_entry(raw)):
+                    found.setdefault(key, []).append(entry)
+            cursor = (payload.get("metadata") or {}).get("nextCursor")
+            reached = _feed_position(cursor, items)
+            if not cursor or not items or (
+                    reached is not None and reached < since - HUB_CATCHUP_MARGIN_SECONDS):
+                break
+        else:
+            return False
+        with self.viewed_lock, self.viewed_db:
+            for key in creators:
+                username, row_mask, fetch_limit, _, saved = rows[key]
+                entries = json.loads(saved)
+                if key in found:
+                    by_id = {entry["id"]: entry for entry in entries}
+                    by_id.update((entry["id"], entry) for entry in found[key])
+                    entries = sorted(by_id.values(), key=lambda entry: str(entry.get("createdAt") or ""),
+                                     reverse=True)[:fetch_limit]
+                self.viewed_db.execute("INSERT OR REPLACE INTO hub_latest VALUES(?,?,?,?,?,?)",
+                                       (key, username, row_mask, fetch_limit, started, json.dumps(entries)))
+        return True
+
+    def hub_entries(self, collection: dict, per_creator: int, mask: int) -> list[dict]:
+        """Every collection creator's newest videos, newest first.
+
+        Creators with nothing saved are read one by one, in parallel, and HubBuilding is
+        raised until they all have been. Saved lists older than HUB_TTL_SECONDS are caught
+        up from the global feed first, or reread if that reaches too far back. A stale
+        answer is never served.
+        """
+        with self.hub_lock:
+            job = dict(self.hub_job)
+        if job["running"]:
+            raise HubBuilding(job["done"], job["total"], job["name"])
+        name = collection["name"]
+        creators = self.collection_creators(collection["collectionId"])
+        limit = max(HUB_FETCH_MIN, per_creator)
+        rows = self._hub_rows()
+        missing = [(key, username) for key, username in creators.items()
+                   if (row := rows.get(key)) is None or row[1] != mask or row[2] < limit]
+        if missing:
+            job = self._hub_start(name, missing, mask, limit)
+            if job["error"] and not job["running"]:
+                raise RuntimeError(job["error"])
+            raise HubBuilding(job["done"], job["total"], job["name"])
+        with self.hub_catchup_lock:
+            rows = self._hub_rows()
+            since = min((rows[key][3] for key in creators), default=time.time())
+            if time.time() - since > HUB_TTL_SECONDS and \
+                    not self._hub_catch_up(creators, rows, mask, since):
+                job = self._hub_start(name, list(creators.items()), mask, limit)
+                raise HubBuilding(job["done"], job["total"], job["name"])
+            rows = self._hub_rows()
+        # Saved entries are shared between hubs, so the source is named as they are served.
+        entries = [{**entry, **_playback(entry["videoUrl"]), "source": name}
+                   for key in creators if key in rows for entry in json.loads(rows[key][4])]
+        return sorted(entries, key=lambda entry: str(entry.get("createdAt") or ""), reverse=True)
+
+    def mark_member(self, collection_id: int, image_id: int) -> None:
+        with self.member_locks[collection_id]:
+            if collection_id in self.members:
+                self.members[collection_id][1].add(int(image_id))
+
+    def served_entry(self, image_id: int) -> dict | None:
+        with self.lock:
+            return self.served.get(int(image_id))
+
+    @staticmethod
+    def catalog() -> dict:
+        return {"queues": list(QUEUES), "musicModels": list(MUSIC_MODELS),
+                "musicFocus": MUSIC_FOCUS, "collections": list(COLLECTIONS),
+                "perCreatorDefault": PER_CREATOR_DEFAULT, "perCreatorMax": PER_CREATOR_MAX}
