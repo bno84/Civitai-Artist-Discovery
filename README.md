@@ -214,6 +214,25 @@ python -m pip install -r requirements.txt
 python server.py
 ```
 
+Experimental Linux container launch, which keeps Python and its packages off the host:
+
+```bash
+mkdir -p data-dev-3.0
+podman compose up --build
+```
+
+`compose.yaml` builds a rootless Podman image from the checkout (`container/`) and runs
+it as your own user with host networking and your desktop's D-Bus session. Credentials
+therefore still go to the desktop Secret Service, the browser opens through the desktop
+portal, and `data-dev-3.0/` beside the checkout is shared with 3.0 source launches. The
+project, image, container, and data folder are all named for 3.0, so a 2.x container and
+its `data/` folder are left alone. The container is a sandbox for one person on one
+desktop. Compose explicitly selects the hosted Community beta service because source
+launches otherwise default to the local Community backend. Hosted access and submission
+policy still apply. The container is not a way to host the app. Changing **LAN access**
+in Settings stops the container instead of restarting the app; the new setting takes
+effect on the next `up`.
+
 The executable is a local Python/SQLite server; the browser tab is its interface rather
 than a standalone webpage. The server listens only on the local computer and opens the
 application in your default browser. On Windows, its notification-area icon remains
