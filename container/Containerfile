@@ -16,8 +16,12 @@ COPY server.py ./
 COPY discovery/ discovery/
 COPY static/ static/
 COPY --chmod=755 container/open_url.py container/
+# The release this image runs as: stable 3.0.0 on the Production project, not the
+# Development beta a source launch defaults to. Validated at startup like a package.
+COPY container/build-configuration.json container/
+ENV CAD_BUILD_CONFIGURATION=/app/container/build-configuration.json
 
 # Data lives in the folder compose.yaml mounts and names in CIVITAI_HISTORY_DATA_DIR
-# (data-dev-3.0/ beside the checkout). No VOLUME here: an anonymous volume would hide a
+# (data-3.0/ beside the checkout). No VOLUME here: an anonymous volume would hide a
 # missing mount instead of failing, and would outlive the container.
 ENTRYPOINT ["python", "/app/server.py"]

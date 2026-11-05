@@ -6,3 +6,4 @@
 !discovery/*.py
 !static/
 !container/open_url.py
+!container/build-configuration.json
