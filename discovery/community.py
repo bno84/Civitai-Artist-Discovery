@@ -757,9 +757,10 @@ def build_community(data_root, profile_provider, token_provider):
         verifier.artworks={image:art for image,art in verifier.artworks.items() if image in real_ids}
         verifier.live_verifier=CivitaiVerifier(token_provider=token_provider)
     if mode == "supabase":
+        from .build_config import CONFIGURED
         from .community_beta import BETA_ENDPOINT
         from .oauth import get_community_session
-        backend = SupabaseCommunityBackend(BETA_ENDPOINT if getattr(sys,'frozen',False) else os.environ.get("CAD_COMMUNITY_URL"),identity_token_provider=get_community_session)
+        backend = SupabaseCommunityBackend(BETA_ENDPOINT if CONFIGURED else os.environ.get("CAD_COMMUNITY_URL"),identity_token_provider=get_community_session)
     else:
         backend = LocalCommunityBackend(Path(data_root) / "community" / ("fixtures.sqlite3" if fixture else "local.sqlite3"), verifier)
         if fixture:
