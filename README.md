@@ -248,6 +248,26 @@ CAD_BUILD_CONFIGURATION=stable.json CAD_COMMUNITY_MODE=supabase \
   CIVITAI_HISTORY_DATA_DIR=data-3.0 python server.py
 ```
 
+Experimental Linux container launch, which keeps Python and its packages off the host:
+
+```bash
+mkdir -p data-3.0
+podman compose up --build
+```
+
+`compose.yaml` builds a rootless Podman image from the checkout (`container/`) and runs
+it as your own user with host networking and your desktop's D-Bus session. Credentials
+therefore still go to the desktop Secret Service, the browser opens through the desktop
+portal, and its data lives in `data-3.0/` beside the checkout. The image runs as stable
+3.0.0 on the Production project, using `container/build-configuration.json`; update that
+file with each release. Its data folder is kept apart from `data-dev-3.0/`, which a plain
+source launch uses for the Development beta, and from 2.x's `data/`. The container is a
+sandbox for one person on one desktop. Compose selects the hosted Community service
+because source launches otherwise default to the local Community backend. Hosted access
+and submission policy still apply. The container is not a way to host the app. Changing **LAN access**
+in Settings stops the container instead of restarting the app; the new setting takes
+effect on the next `up`.
+
 The executable is a local Python/SQLite server; the browser tab is its interface rather
 than a standalone webpage. The server listens only on the local computer and opens the
 application in your default browser. On Windows, its notification-area icon remains

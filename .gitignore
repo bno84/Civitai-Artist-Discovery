@@ -17,6 +17,15 @@
 !requirements.txt
 !server.py
 
+# Linux container image (podman compose up --build)
+!compose.yaml
+!.containerignore
+!container/
+container/*
+!container/Containerfile
+!container/*.py
+!container/build-configuration.json
+
 # Portable runtime data lives beside the executable/source checkout.
 data/
 
