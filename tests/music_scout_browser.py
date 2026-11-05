@@ -125,9 +125,9 @@ try:
         page.goto(base_url, wait_until="networkidle")
         page.locator(".creator-card").first.wait_for()
 
-        # The tab sits between the Time Machine and the profile, with its icon.
+        # The tab sits between the Time Machine and Collectalytics, with its icon.
         order = page.eval_on_selector_all(".view-tabs > button", "buttons => buttons.map(button => button.id)")
-        assert order.index("tabTimeMachine") + 1 == order.index("tabMusicScout") == order.index("tabDiscovery") - 1, order
+        assert order.index("tabTimeMachine") + 1 == order.index("tabMusicScout") == order.index("tabCollectalytics") - 1, order
         assert page.locator("#tabMusicScout svg.ui-icon").count() == 1
 
         page.locator("#tabMusicScout").click()
