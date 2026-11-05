@@ -1,5 +1,6 @@
 """Reviewed per-build identity and project selection; never a client endpoint option."""
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -32,17 +33,32 @@ def validate(value):
     return dict(value)
 
 
-def load():
-    path = Path(__file__).with_name('build-configuration.json')
+def _read(path):
+    if not path.is_file() or path.stat().st_size > 4096:
+        raise RuntimeError('Build configuration missing or invalid')
+    return validate(json.loads(path.read_text(encoding='utf-8')))
+
+
+def source_path():
+    """The build identity a source launch explicitly selected, if any."""
     if getattr(sys, 'frozen', False):
-        if not path.is_file() or path.stat().st_size > 4096:
-            raise RuntimeError('Packaged build configuration missing or invalid')
-        return validate(json.loads(path.read_text(encoding='utf-8')))
-    # Source execution cannot be repointed by an environment variable or profile file.
-    return validate(DEFAULT)
+        return None
+    value = os.environ.get('CAD_BUILD_CONFIGURATION')
+    return Path(value) if value else None
+
+
+def load():
+    if getattr(sys, 'frozen', False):
+        return _read(Path(__file__).with_name('build-configuration.json'))
+    # A packaged build cannot be repointed. A source launch may name a whole build
+    # identity, validated like a package's; endpoint variables alone never repoint it.
+    path = source_path()
+    return _read(path) if path else validate(DEFAULT)
 
 
 CONFIG = load()
+# A packaged or explicitly selected identity owns its endpoint end to end.
+CONFIGURED = bool(getattr(sys, 'frozen', False) or source_path())
 CHANNEL = CONFIG['channel']
 VERSION = CONFIG['version']
 ENVIRONMENT = CONFIG['environment']

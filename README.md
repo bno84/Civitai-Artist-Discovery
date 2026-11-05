@@ -235,6 +235,19 @@ python -m pip install -r requirements.txt
 python server.py
 ```
 
+A source launch identifies as the Development beta. To run it as another release, point
+`CAD_BUILD_CONFIGURATION` at a build configuration file, the same format
+`scripts/configure-build.py` writes for packages and validated the same way. The selected
+project then owns Community and sign-in, and `CAD_COMMUNITY_URL` is ignored. Use a
+separate data folder per project; Development sessions are not valid in Production.
+
+```bash
+python scripts/configure-build.py --channel stable --version 3.0.0 \
+  --environment production --project-ref masrxykkbqngtbeeqpbq --output stable.json
+CAD_BUILD_CONFIGURATION=stable.json CAD_COMMUNITY_MODE=supabase \
+  CIVITAI_HISTORY_DATA_DIR=data-3.0 python server.py
+```
+
 The executable is a local Python/SQLite server; the browser tab is its interface rather
 than a standalone webpage. The server listens only on the local computer and opens the
 application in your default browser. On Windows, its notification-area icon remains

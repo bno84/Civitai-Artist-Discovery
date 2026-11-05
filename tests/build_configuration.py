@@ -42,4 +42,30 @@ class BuildConfiguration(unittest.TestCase):
                 path.write_text('{"endpoint":"https://attacker.invalid"}',encoding='utf-8')
                 with self.assertRaises(ValueError):build_config.load()
 
+    def test_source_launch_selects_a_validated_identity(self):
+        stable={**build_config.DEFAULT,'channel':'stable','version':'3.0.0','environment':'production','projectRef':'abcdefghijklmnopqrst'}
+        with tempfile.TemporaryDirectory(prefix='cad3-build-config-') as name:
+            path=Path(name)/'stable.json'
+            path.write_text(json.dumps(stable),encoding='utf-8')
+            with patch.dict(os.environ,{'CAD_BUILD_CONFIGURATION':str(path)}):
+                self.assertEqual(build_config.load(),stable)
+                # A package ignores the selection and still requires its own file.
+                with patch.object(sys,'frozen',True,create=True),patch.object(build_config,'__file__',str(Path(name)/'build_config.py')):
+                    with self.assertRaises(RuntimeError):build_config.load()
+                path.write_text(json.dumps({**stable,'projectRef':build_config.DEVELOPMENT_PROJECT}),encoding='utf-8')
+                with self.assertRaises(ValueError):build_config.load()
+            with patch.dict(os.environ,{'CAD_BUILD_CONFIGURATION':str(Path(name)/'missing.json')}):
+                with self.assertRaises(RuntimeError):build_config.load()
+
+    def test_selected_identity_owns_the_community_endpoint(self):
+        from discovery import community
+        with tempfile.TemporaryDirectory(prefix='cad3-build-config-') as name:
+            env={'CAD_COMMUNITY_MODE':'supabase','CAD_COMMUNITY_URL':'https://attacker.supabase.co/functions/v1/community-v1'}
+            with patch.dict(os.environ,env),patch.object(build_config,'CONFIGURED',True):
+                backend=community.build_community(name,lambda:None,lambda:None)
+            self.assertEqual(backend.backend.url,build_config.ENDPOINT)
+            with patch.dict(os.environ,env),patch.object(build_config,'CONFIGURED',False):
+                backend=community.build_community(name,lambda:None,lambda:None)
+            self.assertEqual(backend.backend.url,env['CAD_COMMUNITY_URL'])
+
 if __name__=='__main__':unittest.main()
