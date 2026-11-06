@@ -48,6 +48,7 @@ class FakeClient:
     held = {}
     fail_add = False
     fail_readback = False
+    fail_comment = False
 
     def query(self, procedure, payload):
         if procedure == "image.getInfinite":
@@ -83,6 +84,8 @@ class FakeClient:
         return {value: set(FakeClient.held.get(value, set())) for value in image_ids}
 
     def comment_on_image(self, image_id, content):
+        if FakeClient.fail_comment:
+            raise server.CivitaiHTTPError(404, 'No procedure found on path "commentv2.upsert"')
         FakeClient.calls.append(("comment", image_id, content))
 
     def add_image_to_collection(self, image_id, collection):
@@ -190,6 +193,14 @@ with patch.object(server, "MUSIC_SCOUT", scout), \
         status, added = call("POST", "/api/music/focus", {"imageId": 803})
         assert status == 200 and added["alreadyIn"] and not added["commented"], added
         assert FakeClient.calls == [], FakeClient.calls
+
+        # An upstream comment failure is actionable and never adds the video.
+        FakeClient.fail_comment = True
+        status, answer = call("POST", "/api/music/focus", {"imageId": 801})
+        assert status == 502 and "did not confirm your comment" in answer["error"], answer
+        assert "Check its comments" in answer["error"], answer
+        assert FakeClient.calls == [] and 801 not in FakeClient.held
+        FakeClient.fail_comment = False
 
         # A new add posts the default comment first, then adds.
         status, added = call("POST", "/api/music/focus", {"imageId": 801})

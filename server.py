@@ -2503,7 +2503,14 @@ class Handler(BaseHTTPRequestHandler):
                 # The comment goes first: a video must not land in the collection without
                 # one. If the add then fails, say so plainly rather than retrying, which
                 # would post the comment twice.
-                client.comment_on_image(image_id, MUSIC_FOCUS["commentHtml"])
+                try:
+                    client.comment_on_image(image_id, MUSIC_FOCUS["commentHtml"])
+                except Exception as error:
+                    log_internal_error("Music Focus comment before add", error)
+                    self.json_response({"error": "Civitai did not confirm your comment. The video "
+                                        "was not added to Music Focus. Check its comments on "
+                                        "Civitai before trying again."}, 502)
+                    return
                 try:
                     client.add_image_to_collection(image_id, collection)
                 except Exception as error:
