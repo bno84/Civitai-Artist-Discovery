@@ -269,7 +269,7 @@ class SocialClient:
 
     def comment_on_image(self, image_id: int, content: str) -> object:
         """Post one comment. ``content`` is the HTML Civitai's own editor produces."""
-        return self.mutate("commentv2.upsert", {
+        return self.mutate("commentv3.create", {
             "entityId": int(image_id), "entityType": "image", "content": content,
         })
 
