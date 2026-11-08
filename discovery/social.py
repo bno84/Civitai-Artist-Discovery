@@ -273,6 +273,15 @@ class SocialClient:
             "entityId": int(image_id), "entityType": "image", "content": content,
         })
 
+    def set_collection_items_status(self, collection_id: int, collection_item_ids: list[int],
+                                    status: str) -> object:
+        """Accept or reject items in a collection the account owns or manages."""
+        return self.mutate("collection.updateCollectionItemsStatus", {
+            "collectionId": int(collection_id),
+            "collectionItemIds": [int(value) for value in collection_item_ids],
+            "status": status,
+        })
+
     def image_collection_ids(self, image_ids: list[int]) -> dict[int, set[int] | None]:
         """Which of the account's collections hold each image; None where Civitai has no record.
 
