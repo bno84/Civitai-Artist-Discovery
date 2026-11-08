@@ -249,6 +249,26 @@ An unlocked desktop Secret Service keyring is required for Linux sign-in. This i
 experimental Linux support; the Windows package remains the routinely tested
 distribution. See the [Linux setup and troubleshooting guide](docs/3.0-linux-stable-source.md).
 
+Experimental Linux container launch, which keeps Python and its packages off the host:
+
+```bash
+mkdir -p data-3.0
+podman compose up --build
+```
+
+`compose.yaml` builds a rootless Podman image from the checkout (`container/`) and runs
+it as your own user with host networking and your desktop's D-Bus session. Credentials
+therefore still go to the desktop Secret Service, the browser opens through the desktop
+portal, and its data lives in `data-3.0/` beside the checkout. The image launches
+`server.py --stable`, so it runs the stable release on the Production project and its
+hosted Community. Its data folder is kept apart from `data-dev-3.0/`, which a plain source
+launch uses for the Development beta, and from 2.x's `data/`. The project, image and
+container are all named for 3.0, so a 2.x container is left alone. The container is a
+sandbox for one person on one desktop. Hosted access and submission policy still apply.
+The container is not a way to host the app. Changing **LAN access** in Settings stops
+the container instead of restarting the app; the new setting takes effect on the next
+`up`.
+
 The executable is a local Python/SQLite server; the browser tab is its interface rather
 than a standalone webpage. The server listens only on the local computer and opens the
 application in your default browser. On Windows, its notification-area icon remains
