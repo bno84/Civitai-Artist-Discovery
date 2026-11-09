@@ -11,6 +11,8 @@ Measured against civitai.red in Oct 2026:
 - ``modelId`` returns work that attributes any version of that model, and combines with
   ``type`` and ``browsingLevel``. It takes one id: ``modelId=a,b`` is HTTP 400, so several
   models are separate feeds merged here, newest first.
+- That includes resources the creator added by hand, such as a workflow. Those rows list
+  no ``modelVersionIds``, yet ``modelId`` and ``modelVersionId`` still return them.
 - The original file is served as a 301 to the blob store, with the first byte in under a
   second. A 768-wide ``transcode=true,width=N,optimized=true`` file took 4 to 10 seconds on
   videos posted minutes earlier; 450 wide starts at once but is soft at player size.
@@ -55,12 +57,17 @@ STILL_WIDTH = 450
 PER_CREATOR_DEFAULT = 3
 PER_CREATOR_MAX = 50
 
-# Audio generation models whose attributed videos are likely to carry music. ``modelId``
-# covers every version, so a new release of the same model needs no change here.
+# Audio generation models and workflows whose attributed videos are likely to carry music.
+# ``modelId`` covers every version, so a new release of the same model needs no change here.
+# Each is one more feed, and so one more request when the queue is first filled.
 MUSIC_MODELS = (
     {"modelId": 2944296, "name": "YuE2 3B", "url": "https://civitai.red/models/2944296"},
     {"modelId": 2549270, "name": "ACE-Step Audio Gen", "url": "https://civitai.red/models/2549270"},
     {"modelId": 2855966, "name": "MiniMax Music 3", "url": "https://civitai.red/models/2855966"},
+    {"modelId": 3037323, "name": "YuE2-3B RS-FW 4.0×0.7",
+     "url": "https://civitai.red/models/3037323"},
+    {"modelId": 3020480, "name": "YuE2 Kit - Song workflow",
+     "url": "https://civitai.red/models/3020480"},
 )
 
 # The account's own curated collection. Its owner can add a video from any queue.
@@ -119,7 +126,7 @@ QUEUES = (
      "description": "Newest videos, capped per creator so one busy uploader cannot fill the queue.",
      "perCreator": True},
     {"id": "music-models", "name": "Music model attributed",
-     "description": "Newest videos that credit a music generation model.",
+     "description": "Newest videos that credit a music generation model or workflow.",
      "models": [model["name"] for model in MUSIC_MODELS]},
     {"id": "latest", "name": "Latest videos",
      "description": "Every new video, newest first."},
@@ -351,7 +358,10 @@ class Queue:
 
     def ensure(self, count: int) -> None:
         with self.lock:
-            budget = [MAX_PAGES_PER_CALL]
+            # Choosing the newest entry needs a page from every feed, so the first fill
+            # may read each feed once even when there are more feeds than the cap.
+            budget = [max(MAX_PAGES_PER_CALL,
+                          sum(not feed.buffer and not feed.exhausted for feed in self.feeds))]
             while len(self.items) < count:
                 entry = self._next(budget)
                 if entry is None:
