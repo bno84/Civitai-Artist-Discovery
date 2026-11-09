@@ -11,6 +11,8 @@ if ($OneFile) { throw 'Portable releases use the folder build; -OneFile is no lo
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location $root
 try {
+  python -B scripts/check-git-identity.py --all
+  if ($LASTEXITCODE -ne 0) { throw 'Personal-identity source audit rejected this build.' }
   python -c "import ssl, sys; crypto = tuple(int(n) for n in ssl.OPENSSL_VERSION.split()[1].split('.')); assert sys.version_info[:2] == (3, 14) and sys.version_info[:3] >= (3, 14, 8) and crypto >= (3, 5, 9), 'Windows releases require Python 3.14.8+ (3.14 series) with OpenSSL 3.5.9+'; print(sys.version.split()[0], ssl.OPENSSL_VERSION)"
   if ($LASTEXITCODE -ne 0) { throw 'Use the reviewed, patched Windows release interpreter.' }
   $buildPaths = @()
@@ -56,8 +58,9 @@ try {
   # pack the binary, and packed executables are a well-known heuristic trigger.
   python (Join-Path $root 'scripts/check-test-lab-exclusion.py')
   if ($LASTEXITCODE) { throw 'Development Test Lab must be excluded from release inputs' }
-  python -m PyInstaller --noconfirm --clean --onedir --windowed --noupx `
+  python -B scripts/run-redacted.py -- -m PyInstaller --noconfirm --clean --onedir --windowed --noupx --log-level ERROR `
     --exclude-module discovery.community_dev --exclude-module discovery.community_fixtures `
+    --exclude-module discovery.privacy_patterns `
     --name $applicationId `
     --icon $icon `
     --version-file $versionResource `
@@ -90,13 +93,18 @@ try {
   foreach ($guide in @('3.0-beta-README.md','3.0-beta-linux.md','3.0-beta-privacy.md','3.0-beta-release-notes.md','3.0-beta-operations.md','3.0-beta-publication-checklist.md','3.0-audit-response-2026-10-24.md','3.0-owner-quota-testing.md','3.0-beta-testing-quota-exceptions.md','3.0-audit-closure-2026-10-24.md','3.0-beta-signing-design.md','3.0-stable-readiness.md','3.0-stable-installation.md','3.0-production-handoff.md','3.0-recovery.md','3.0-production-bootstrap.md','3.0-audit-tracker.md','3.0-supabase-public-release.md')) {
     Copy-Item -LiteralPath (Join-Path $root ('docs/' + $guide)) -Destination $guides
   }
-  foreach ($guide in @('3.0-stable-release-notes.md','3.0-changelog.md','3.0-privacy.md','3.0-public-launch.md')) {
+  foreach ($guide in @('3.0-stable-release-notes.md','3.0-changelog.md','3.0-privacy.md','3.0-public-launch.md','3.0-community-rating-policy.md','3.0-linux-stable-source.md','release-notes.md','3.0-identity-only-authentication.md','3.0-audit-reconciliation-2026-11-07.md','3.0-beta11-verification.md','3.0-beta11-review-corrections.md','3.0-beta11-reliability.md','3.0-beta11-accepted-gallery.md')) {
     Copy-Item -LiteralPath (Join-Path $root ('docs/' + $guide)) -Destination $guides
   }
   Copy-Item -LiteralPath $configuration -Destination (Join-Path $package 'build-configuration.json')
+  $recoveryTools = Join-Path $package 'tools'
+  New-Item -ItemType Directory -Force $recoveryTools | Out-Null
+  Copy-Item -LiteralPath (Join-Path $root 'scripts/copy-local-data.py') -Destination $recoveryTools
   python -B scripts/stamp-beta-build.py finish --record $sourceRecord --package $package --configuration $configuration
   if ($LASTEXITCODE -ne 0) { throw 'Build provenance verification failed' }
-  Write-Host "Built: $package\$applicationId.exe"
+  python -B scripts/check-personal-identity.py --package $package
+  if ($LASTEXITCODE -ne 0) { throw 'Personal-identity package audit rejected this build.' }
+  Write-Host "Built verified package: $applicationId"
 } finally {
   Pop-Location
 }
