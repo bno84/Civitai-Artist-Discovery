@@ -73,17 +73,30 @@ assert [item["id"] for item in again["items"]] == [30, 41], again
 assert len(archive.requests) == requests, "a loaded queue must not refetch"
 
 # -- music models: separate feeds, merged newest first, duplicates once ---------------
-yue, ace, minimax = (model["modelId"] for model in MUSIC_MODELS)
+yue, ace, minimax, repack, kit = (model["modelId"] for model in MUSIC_MODELS)
 pages = {
     (yue, None): ([row(1, "A", 50), row(2, "B", 20)], None),
     (ace, None): ([row(3, "C", 40), row(1, "A", 50), row(4, "D", 10)], None),
     (minimax, None): ([row(5, "E", 30)], None),
+    (repack, None): ([row(7, "G", 45), row(2, "B", 20)], None),
+    (kit, None): ([row(6, "F", 35)], None),
 }
 archive = FakeArchive(pages)
 page = MusicScout(archive).page("music-models", 0, 10, levels=(1, 2, 4))
-assert [item["id"] for item in page["items"]] == [1, 3, 5, 2, 4], page["items"]
-assert {request["modelId"] for request in archive.requests} == {yue, ace, minimax}, archive.requests
-assert page["items"][1]["source"] == "ACE-Step Audio Gen", page["items"][1]
+assert [item["id"] for item in page["items"]] == [1, 7, 3, 6, 5, 2, 4], page["items"]
+assert {request["modelId"] for request in archive.requests} == {yue, ace, minimax, repack, kit}, archive.requests
+assert page["items"][2]["source"] == "ACE-Step Audio Gen", page["items"][2]
+assert page["items"][1]["source"] == "YuE2-3B RS-FW 4.0×0.7", page["items"][1]
+
+# More feeds than the per-call page cap still fill the first screen.
+from discovery.musicscout import MAX_PAGES_PER_CALL, Feed, Queue
+archive = FakeArchive({(n, None): ([row(n, f"U{n}", n)], None)
+                       for n in range(1, MAX_PAGES_PER_CALL + 3)})
+queue = Queue([Feed(archive._request, {"modelId": n}) for n in range(1, MAX_PAGES_PER_CALL + 3)])
+page = queue.page(0, 3)
+assert [item["id"] for item in page["items"]] == [MAX_PAGES_PER_CALL + 2, MAX_PAGES_PER_CALL + 1,
+                                                  MAX_PAGES_PER_CALL], page
+assert len(archive.requests) == MAX_PAGES_PER_CALL + 2, archive.requests
 
 # -- lazy: one screen costs one page --------------------------------------------------
 pages = {("all", None): ([row(100 + i, f"U{i}", 59 - i) for i in range(50)], "next"),
