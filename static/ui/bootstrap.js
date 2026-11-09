@@ -1,6 +1,8 @@
 import { mountShell, groupPageControls } from './shell.js';
+import { mountSourceNotice } from './source-notice.js';
 import { enhancePopover } from './menu.js';
-import { api } from './api.js';
+import { api, finishControlChange } from './api.js';
+import { createSelectionQueue } from './selection-queue.js';
 import { showArtwork, showVideoPoster } from './artwork.js';
 import { showGallerySkeleton, showPageError } from './feedback.js';
 import { bindDialog } from './dialog.js';
@@ -15,6 +17,10 @@ import { mountCalendar } from './calendar.js';
 import { reportClientEvent } from './diagnostics.js';
 import { mountPreferences } from './preferences.js';
 import { mountMusicScout } from './music-scout.js';
+import { mountCollectalytics } from './collectalytics.js';
+import { mountCommunity } from './community.js';
+import { createInfinitePager } from './pagination.js';
+import { mountDevelopmentDiagnostics } from './development.js';
 import { showDetailVideo, clearDetailVideo, suspendCardVideos, refreshVideoEligibility, resetVideoRecoveryBudget } from './video.js';
 
 if (new URLSearchParams(location.search).get('uiPerf') === '1') {
@@ -22,20 +28,24 @@ if (new URLSearchParams(location.search).get('uiPerf') === '1') {
 }
 
 mountShell();
+mountSourceNotice();
 window.reportClientEvent = reportClientEvent;
 // Temporary bridge for the classic page controller; new modules import directly.
-window.CivitaiUI = Object.freeze({ api, showArtwork, showVideoPoster, showGallerySkeleton, showPageError, createCreatorCard, browsingState, modelParameters, readBrowsingState, toggleCreatorFollow, renderProfile, showDetailVideo, clearDetailVideo, suspendCardVideos, refreshVideoEligibility, resetVideoRecoveryBudget });
+window.CivitaiUI = Object.freeze({ api, finishControlChange, createSelectionQueue, showArtwork, showVideoPoster, showGallerySkeleton, showPageError, createCreatorCard, createInfinitePager, browsingState, modelParameters, readBrowsingState, toggleCreatorFollow, renderProfile, showDetailVideo, clearDetailVideo, suspendCardVideos, refreshVideoEligibility, resetVideoRecoveryBudget });
 
 // Transitional classic controller preserves existing integration tests and global
 // callbacks while page behavior moves into modules one tested slice at a time.
 const controller = document.createElement('script');
 controller.src = '/app.js';
 controller.onload = () => {
+  mountCommunity();
+  mountDevelopmentDiagnostics().catch(() => {});
   groupPageControls();
   mountPageLayout();
   const preferences = mountPreferences();
   window.updateGalleryPreferencesUI = preferences.update;
   window.CivitaiMusicScout = mountMusicScout();
+  window.CivitaiCollectalytics = mountCollectalytics();
   const calendar = mountCalendar({ api,
     state: () => window.galleryCalendarState(),
     select: (date, segment) => window.selectGalleryDate(date, segment),
@@ -48,6 +58,9 @@ controller.onload = () => {
     removeModel: name => window.removeGalleryModel(name).catch(error => window.toast(error.message)),
     reset: () => window.resetGalleryFilters(),
     setMedia: value => window.setGalleryMedia(value),
+    setTagFilters: value => window.setGalleryTagFilters(value),
+    setAccountFilters: value => window.setGalleryAccountFilters(value),
+    setImageFilters: value => window.setGalleryImageFilters(value),
     toggleLevel: level => window.toggleBrowsingLevel(level),
   });
   window.updateGalleryFilters = filters.update;

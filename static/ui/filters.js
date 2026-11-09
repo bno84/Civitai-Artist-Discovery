@@ -4,7 +4,7 @@ import { anchorPopover } from './menu.js';
 
 export function mountFilters(actions) {
   const toolbar = document.querySelector('.segment-toolbar');
-  const content = document.getElementById('contentFilter');
+  const content = document.getElementById('contentMenu');
   const model = document.getElementById('modelFilter');
   const modelMenu = document.getElementById('modelMenu');
   const button = document.createElement('button');
@@ -17,16 +17,51 @@ export function mountFilters(actions) {
   const chips = document.createElement('div');
   chips.className = 'active-filters';
   chips.setAttribute('aria-label', 'Active filters');
-  chips.append(content);
   toolbar.append(chips);
+  let sharedControls = {};
+  const paintRestrictions = () => {
+    const detail = {...sharedControls, hiddenTags: actions.state().applyTagFilters === false ? 0 : sharedControls.hiddenTags};
+    if (actions.state().applyAccountFilters === false) { detail.hiddenCreators = 0; detail.blockedUsers = 0; }
+    if (actions.state().applyImageFilters === false) detail.hiddenArtworks = 0;
+    const parts = [[detail.hiddenCreators,'hidden creators'],[detail.blockedUsers,'blocked users'],
+      [detail.hiddenTags,'hidden tags'],[detail.hiddenArtworks,'hidden artworks']].filter(([n]) => n > 0);
+    restrictions.textContent = parts.map(([n,label]) => `${n} ${label}`).join(' · ');
+    restrictions.hidden = !parts.length;
+    restrictions.title = 'Active Civitai content controls apply alongside the rating selection.';
+  };
+  const restrictions = document.createElement('span');
+  restrictions.id = 'sharedControlsStatus'; restrictions.className = 'filter-button';
+  restrictions.setAttribute('role', 'status'); restrictions.hidden = true; chips.append(restrictions);
+  window.addEventListener('shared-controls-summary', ({detail}) => {
+    sharedControls = detail;
+    paintRestrictions();
+  });
   const panel = document.createElement('section');
   panel.id = 'filterPanel';
   panel.className = 'filter-panel hidden';
   panel.setAttribute('aria-label', 'Gallery filters');
   panel.innerHTML = '<div class="filter-head"><h2>Filters</h2><button type="button" class="quiet-button" aria-label="Close filters">×</button></div><div class="filter-sections"></div><button type="button" class="filter-reset">Reset filters</button>';
   panel.querySelector('.filter-sections').append(document.getElementById('contentMenu'), modelMenu);
+  const tagFilter = document.createElement('label');
+  tagFilter.className = 'filter-row tag-filter-toggle';
+  tagFilter.innerHTML = '<input id="applyTagFilters" type="checkbox" checked><span>Apply my tag filters</span>';
+  content.append(tagFilter);
+  const tagCheckbox = tagFilter.querySelector('input');
+  tagCheckbox.onchange = () => actions.setTagFilters(tagCheckbox.checked);
+  const accountFilter = document.createElement('label');
+  accountFilter.className = 'filter-row account-filter-toggle';
+  accountFilter.innerHTML = '<input id="applyAccountFilters" type="checkbox" checked><span>Exclude hidden and blocked accounts</span>';
+  content.append(accountFilter);
+  const accountCheckbox = accountFilter.querySelector('input');
+  accountCheckbox.onchange = () => actions.setAccountFilters(accountCheckbox.checked);
+  const imageFilter = document.createElement('label');
+  imageFilter.className = 'filter-row image-filter-toggle';
+  imageFilter.innerHTML = '<input id="applyImageFilters" type="checkbox" checked><span>Exclude hidden artworks<small>Includes images hidden after reporting them.</small></span>';
+  content.append(imageFilter);
+  const imageCheckbox = imageFilter.querySelector('input');
+  imageCheckbox.onchange = () => actions.setImageFilters(imageCheckbox.checked);
   const media = document.createElement('label');
-  media.className = 'preference-field';
+  media.className = 'preference-field media-filter';
   media.innerHTML = '<span>Media type</span><select id="mediaType" aria-label="Media type"><option value="all">All</option><option value="image">Images only</option><option value="video">Videos only</option></select>';
   panel.querySelector('.filter-sections').prepend(media);
   const mediaSelect = media.querySelector('select');
@@ -58,35 +93,13 @@ export function mountFilters(actions) {
     childList: true, subtree: true,
   });
   document.body.append(panel);
-  const compact = document.createElement('section');
-  compact.id = 'contentPanel';
-  compact.className = 'content-panel hidden';
-  compact.setAttribute('aria-label', 'Content ratings');
-  compact.innerHTML = '<div class="filter-head"><strong>Content ratings</strong><button type="button" class="quiet-button" aria-label="Close content ratings">\u00d7</button></div><div class="rating-pills" role="group" aria-label="Browsing levels"></div>';
-  const choices = [...document.querySelectorAll('#contentMenu [data-level]')].map(original => {
-    const choice = document.createElement('button');
-    choice.type = 'button'; choice.dataset.level = original.dataset.level;
-    const label = original.textContent.replace(/^\u2713\s*/, '');
-    choice.setAttribute('aria-label', label);
-    choice.onclick = () => actions.toggleLevel(Number(choice.dataset.level));
-    compact.querySelector('.rating-pills').append(choice);
-    return { choice, label };
-  });
-  document.body.append(compact);
-  content.setAttribute('aria-controls', compact.id);
   const position = anchorPopover(panel, () => button);
-  const positionContent = anchorPopover(compact, () => content);
-  const closeContent = (restoreFocus = false) => {
-    compact.classList.add('hidden'); content.setAttribute('aria-expanded', 'false');
-    if (restoreFocus) content.focus();
-  };
   const close = (restoreFocus = false) => {
     panel.classList.add('hidden');
     button.setAttribute('aria-expanded', 'false');
     if (restoreFocus) button.focus();
   };
   const open = async () => {
-    closeContent();
     panel.classList.remove('hidden');
     position();
     button.setAttribute('aria-expanded', 'true');
@@ -95,60 +108,44 @@ export function mountFilters(actions) {
     search.disabled = false;
     applyModelSearch();
   };
-  const openContent = () => {
-    close(); compact.classList.remove('hidden');
-    positionContent(); content.setAttribute('aria-expanded', 'true');
-  };
   button.onclick = () => panel.classList.contains('hidden') ? open() : close();
-  content.onclick = () => compact.classList.contains('hidden') ? openContent() : closeContent();
-  for (const trigger of [button, content]) trigger.addEventListener('keydown', event => {
-    const surface = trigger === content ? compact : panel;
-    const dismiss = trigger === content ? closeContent : close;
-    if (event.key === 'Escape' && !surface.classList.contains('hidden')) {
-      event.preventDefault();
-      dismiss(true);
-      return;
+  button.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !panel.classList.contains('hidden')) {
+      event.preventDefault();close(true);return;
     }
     if (event.key !== 'ArrowDown') return;
-    event.preventDefault();
-    if (trigger === content) openContent(); else open();
-    surface.querySelector('.rating-pills button:not(:disabled)')?.focus();
+    event.preventDefault();open();
+    panel.querySelector('.rating-pills button:not(:disabled)')?.focus();
   });
   panel.querySelector('.quiet-button').onclick = () => close(true);
   panel.addEventListener('keydown', event => {
     if (event.key === 'Escape') { event.preventDefault(); close(true); }
   });
-  compact.querySelector('.quiet-button').onclick = () => closeContent(true);
-  compact.addEventListener('keydown', event => {
-    if (event.key === 'Escape') { event.preventDefault(); closeContent(true); }
-  });
   document.addEventListener('click', event => {
     if (!panel.contains(event.target) && !button.contains(event.target)) close();
-    if (!compact.contains(event.target) && !content.contains(event.target)) closeContent();
   });
   document.addEventListener('keydown', event => {
     if (event.key !== 'Escape' || event.defaultPrevented || event.target.closest('dialog[open]')) return;
-    if (!compact.classList.contains('hidden')) { event.preventDefault(); closeContent(true); }
-    else if (!panel.classList.contains('hidden')) { event.preventDefault(); close(true); }
+    if (!panel.classList.contains('hidden')) { event.preventDefault(); close(true); }
   });
   panel.querySelector('.filter-reset').onclick = () => actions.reset();
 
   const paint = () => {
     applyModelSearch();
-    const { models, levels, media = 'all' } = actions.state();
-    for (const { choice, label } of choices) {
-      const selected = levels.includes(Number(choice.dataset.level));
-      choice.classList.toggle('selected', selected);
-      choice.setAttribute('aria-pressed', String(selected));
-      choice.textContent = `${selected ? '\u2713 ' : ''}${label}`;
-      choice.disabled = content.disabled;
-    }
+    const { models, levels, media = 'all', applyTagFilters = true, applyAccountFilters = true, applyImageFilters = true, controlFiltersSaving = false } = actions.state();
+    tagCheckbox.checked = applyTagFilters;
+    if (tagCheckbox.disabled !== controlFiltersSaving) tagCheckbox.disabled = controlFiltersSaving;
+    accountCheckbox.checked = applyAccountFilters;
+    if (accountCheckbox.disabled !== controlFiltersSaving) accountCheckbox.disabled = controlFiltersSaving;
+    imageCheckbox.checked = applyImageFilters;
+    if (imageCheckbox.disabled !== controlFiltersSaving) imageCheckbox.disabled = controlFiltersSaving;
+    paintRestrictions();
     mediaSelect.value = media;
     const ratingChanged = levels.length !== 2 || !levels.includes(1) || !levels.includes(2);
-    const count = models.length + Number(ratingChanged) + Number(media !== 'all');
+    const count = models.length + Number(ratingChanged) + Number(media !== 'all') + Number(!applyTagFilters) + Number(!applyAccountFilters) + Number(!applyImageFilters);
     button.textContent = count ? `Filters · ${count}` : 'Filters';
     button.dataset.activeCount = String(count);
-    panel.querySelector('.filter-reset').disabled = !count || content.disabled;
+    panel.querySelector('.filter-reset').disabled = !count;
     chips.querySelectorAll('.model-chip').forEach(chip => chip.remove());
     if (media !== 'all') {
       const chip = document.createElement('button');

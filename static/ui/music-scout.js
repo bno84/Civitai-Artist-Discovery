@@ -10,7 +10,7 @@ const PREFETCH_AHEAD = 6;
 const STATE_KEY = 'civitaiMusicScout';
 // A video counts as viewed once it has been the current one this long. Holding → to flick
 // past a run of thumbnails should not mark them all.
-const VIEWED_AFTER_MS = 1000;
+const VIEWED_AFTER_MS = 600;
 // How far a newly opened queue looks ahead for the first video not viewed yet.
 const SKIP_VIEWED_PAGES = 10;
 // Civitai's CDN sometimes hangs on a file rather than failing. A video or thumbnail that
@@ -73,9 +73,14 @@ export function mountMusicScout() {
       localStorage.setItem(AUDIO_KEY, JSON.stringify({ muted: state.muted, volume: state.volume }));
     });
     video.addEventListener('error', () => {
-      if (video !== current || !video.getAttribute('src')) return;
+      if (!video.getAttribute('src') || fallBack(video)) return;
+      if (video !== current) return;
       clearTimeout(loadTimer);
       showVideoError('This video could not be played. Press → for the next one.');
+    });
+    // A browser without an HEVC decoder may load the file as sound over a blank picture.
+    video.addEventListener('loadedmetadata', () => {
+      if (video.getAttribute('src') && !video.videoWidth) fallBack(video);
     });
     video.addEventListener('canplay', () => {
       if (video !== current) return;
@@ -150,6 +155,19 @@ export function mountMusicScout() {
     video.preload = preload;
     video.src = item.videoUrl;
     video.dataset.itemId = String(item.id);
+  }
+
+  // Originals are played as uploaded; one the browser cannot decode gets Civitai's
+  // transcode instead, for the rest of this queue.
+  function fallBack(video) {
+    const item = state.items.find(entry => String(entry.id) === video.dataset.itemId);
+    if (!item?.fallbackUrl || item.videoUrl === item.fallbackUrl) return false;
+    item.videoUrl = item.fallbackUrl;
+    const preload = video.preload;
+    delete video.dataset.itemId;
+    load(video, item, preload);
+    if (video === current && state.active) { play(video); watchLoad(video, item); }
+    return true;
   }
 
   function play(video) {
@@ -712,5 +730,7 @@ export function mountMusicScout() {
     event.preventDefault();
   });
 
+  // The page controller can restore this tab before the module mounts.
+  if (!$('musicScout').classList.contains('hidden')) setActive(true);
   return { setActive };
 }

@@ -2,10 +2,13 @@
 
 Covers the per-creator cap, the newest-first merge of several music-model feeds, that an
 image row is never served even if a listing returns one, the hidden-content filter, and
-that the playback file is the transcode Civitai keeps the audio track on.
+that the original file is played with the audio-keeping transcode as its fallback.
 """
 
+import test_safety  # Fail closed before any test network request.
+
 from pathlib import Path
+import json
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -54,7 +57,8 @@ assert names == ["Busy", "Busy", "Quiet", "Other"], names
 assert page["exhausted"] is True, page
 assert all(request["browsingLevel"] == 3 for request in archive.requests), archive.requests
 first = page["items"][0]
-assert "/transcode=true,width=768,optimized=true/" in first["videoUrl"], first
+assert "/original=true/" in first["videoUrl"], first
+assert "/transcode=true,width=768,optimized=true/" in first["fallbackUrl"], first
 assert first["stillUrl"].endswith(".jpeg") and "anim=false" in first["stillUrl"], first
 assert first["civitaiUrl"].endswith("/images/10"), first
 
@@ -69,17 +73,30 @@ assert [item["id"] for item in again["items"]] == [30, 41], again
 assert len(archive.requests) == requests, "a loaded queue must not refetch"
 
 # -- music models: separate feeds, merged newest first, duplicates once ---------------
-yue, ace, minimax = (model["modelId"] for model in MUSIC_MODELS)
+yue, ace, minimax, repack, kit = (model["modelId"] for model in MUSIC_MODELS)
 pages = {
     (yue, None): ([row(1, "A", 50), row(2, "B", 20)], None),
     (ace, None): ([row(3, "C", 40), row(1, "A", 50), row(4, "D", 10)], None),
     (minimax, None): ([row(5, "E", 30)], None),
+    (repack, None): ([row(7, "G", 45), row(2, "B", 20)], None),
+    (kit, None): ([row(6, "F", 35)], None),
 }
 archive = FakeArchive(pages)
 page = MusicScout(archive).page("music-models", 0, 10, levels=(1, 2, 4))
-assert [item["id"] for item in page["items"]] == [1, 3, 5, 2, 4], page["items"]
-assert {request["modelId"] for request in archive.requests} == {yue, ace, minimax}, archive.requests
-assert page["items"][1]["source"] == "ACE-Step Audio Gen", page["items"][1]
+assert [item["id"] for item in page["items"]] == [1, 7, 3, 6, 5, 2, 4], page["items"]
+assert {request["modelId"] for request in archive.requests} == {yue, ace, minimax, repack, kit}, archive.requests
+assert page["items"][2]["source"] == "ACE-Step Audio Gen", page["items"][2]
+assert page["items"][1]["source"] == "YuE2-3B RS-FW 4.0×0.7", page["items"][1]
+
+# More feeds than the per-call page cap still fill the first screen.
+from discovery.musicscout import MAX_PAGES_PER_CALL, Feed, Queue
+archive = FakeArchive({(n, None): ([row(n, f"U{n}", n)], None)
+                       for n in range(1, MAX_PAGES_PER_CALL + 3)})
+queue = Queue([Feed(archive._request, {"modelId": n}) for n in range(1, MAX_PAGES_PER_CALL + 3)])
+page = queue.page(0, 3)
+assert [item["id"] for item in page["items"]] == [MAX_PAGES_PER_CALL + 2, MAX_PAGES_PER_CALL + 1,
+                                                  MAX_PAGES_PER_CALL], page
+assert len(archive.requests) == MAX_PAGES_PER_CALL + 2, archive.requests
 
 # -- lazy: one screen costs one page --------------------------------------------------
 pages = {("all", None): ([row(100 + i, f"U{i}", 59 - i) for i in range(50)], "next"),
@@ -127,7 +144,9 @@ assert page["exhausted"], page
 entry = page["items"][0]
 assert entry["username"] == "Old" and entry["stats"]["reactionCount"] == 5, entry
 assert entry["videoUrl"] == ("https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/key-7/"
-                             "transcode=true,width=768,optimized=true/key-7.mp4"), entry
+                             "original=true/key-7.mp4"), entry
+assert entry["fallbackUrl"] == ("https://image.civitai.com/xG1nkqKTMzGDvpLrqFT7WA/key-7/"
+                                "transcode=true,width=768,optimized=true/key-7.mp4"), entry
 assert entry["stillUrl"].endswith("/key-7.jpeg") and "anim=false" in entry["stillUrl"], entry
 
 
@@ -240,6 +259,17 @@ with tempfile.TemporaryDirectory() as folder:
     later = MusicScout(HubArchive(), social=lambda: HubSocial(), root=Path(folder))
     assert [item["id"] for item in later.page("mf-hub", 0, 10, per_creator=1)["items"]] == [901, 911]
     assert later.archive.users == [], later.archive.users
+    # Lists saved when the transcode was the playback file are served as originals.
+    with later.viewed_lock, later.viewed_db:
+        saved = later.viewed_db.execute("SELECT username_key, entries FROM hub_latest").fetchall()
+        for key, entries in saved:
+            entries = [{**entry, "videoUrl": entry["fallbackUrl"]} for entry in json.loads(entries)]
+            entries = [{k: v for k, v in entry.items() if k != "fallbackUrl"} for entry in entries]
+            later.viewed_db.execute("UPDATE hub_latest SET entries = ? WHERE username_key = ?",
+                                    (json.dumps(entries), key))
+    served = later.page("mf-hub", 0, 10, per_creator=1)["items"]
+    assert all("/original=true/" in item["videoUrl"] and "transcode=true" in item["fallbackUrl"]
+               for item in served), served
     # Another collection's hub shares the saved lists of creators both have, and names
     # its own collection as the source.
     museum = later.page("museum-hub", 0, 10, per_creator=1)["items"]

@@ -18,12 +18,16 @@ export function mountShell() {
     navigation.append(document.getElementById(id));
   }
   brand.classList.add('app-brand');
+  const logo=document.createElement('img');
+  logo.className='app-logo';logo.src='/discovery-beta.ico';logo.alt='';
+  logo.width=32;logo.height=32;logo.setAttribute('aria-hidden','true');
+  brand.querySelector('.app-title-row').prepend(logo);
   header.classList.add('app-header');
   header.replaceChildren(brand, account);
   const tabs = document.querySelector('.view-tabs');
   tabs.setAttribute('aria-label', 'Main navigation');
   tabs.after(navigation);
-  for (const [id, name] of [['tabGallery', 'gallery'], ['tabTimeMachine', 'history'], ['tabMusicScout', 'music'], ['tabDiscovery', 'profile']]) {
+  for (const [id, name] of [['tabGallery', 'gallery'], ['tabTimeMachine', 'history'], ['tabMusicScout', 'music'], ['tabCollectalytics', 'stats'], ['tabDiscovery', 'profile']]) {
     const button = document.getElementById(id);
     button.insertAdjacentHTML('afterbegin', icon(name));
   }

@@ -11,7 +11,14 @@ Measured against civitai.red in Oct 2026:
 - ``modelId`` returns work that attributes any version of that model, and combines with
   ``type`` and ``browsingLevel``. It takes one id: ``modelId=a,b`` is HTTP 400, so several
   models are separate feeds merged here, newest first.
-- The ``transcode=true,width=N,optimized=true`` playback file keeps the AAC audio track.
+- That includes resources the creator added by hand, such as a workflow. Those rows list
+  no ``modelVersionIds``, yet ``modelId`` and ``modelVersionId`` still return them.
+- The original file is served as a 301 to the blob store, with the first byte in under a
+  second. A 768-wide ``transcode=true,width=N,optimized=true`` file took 4 to 10 seconds on
+  videos posted minutes earlier; 450 wide starts at once but is soft at player size.
+  Originals are mostly H.264 with AAC, a median 7 MB and up to about 70 MB. About one in
+  ten is HEVC, which a browser without an HEVC decoder cannot show, so the transcode, which
+  keeps the AAC track, is the fallback.
 - ``anim=false,width=N`` redirects some videos to their original MP4 (30 MB and more),
   while the listing's own ``thumbnail.url`` is a JPEG for the same videos, so it is the
   still used here.
@@ -37,7 +44,7 @@ import urllib.parse
 import urllib.request
 
 from .civitai import normalize
-from .history import video_playback_url, video_still_url
+from .history import video_original_url, video_playback_url, video_still_url
 from .site import API_URL, image_url, profile_url
 
 
@@ -50,12 +57,17 @@ STILL_WIDTH = 450
 PER_CREATOR_DEFAULT = 3
 PER_CREATOR_MAX = 50
 
-# Audio generation models whose attributed videos are likely to carry music. ``modelId``
-# covers every version, so a new release of the same model needs no change here.
+# Audio generation models and workflows whose attributed videos are likely to carry music.
+# ``modelId`` covers every version, so a new release of the same model needs no change here.
+# Each is one more feed, and so one more request when the queue is first filled.
 MUSIC_MODELS = (
     {"modelId": 2944296, "name": "YuE2 3B", "url": "https://civitai.red/models/2944296"},
     {"modelId": 2549270, "name": "ACE-Step Audio Gen", "url": "https://civitai.red/models/2549270"},
     {"modelId": 2855966, "name": "MiniMax Music 3", "url": "https://civitai.red/models/2855966"},
+    {"modelId": 3037323, "name": "YuE2-3B RS-FW 4.0×0.7",
+     "url": "https://civitai.red/models/3037323"},
+    {"modelId": 3020480, "name": "YuE2 Kit - Song workflow",
+     "url": "https://civitai.red/models/3020480"},
 )
 
 # The account's own curated collection. Its owner can add a video from any queue.
@@ -114,7 +126,7 @@ QUEUES = (
      "description": "Newest videos, capped per creator so one busy uploader cannot fill the queue.",
      "perCreator": True},
     {"id": "music-models", "name": "Music model attributed",
-     "description": "Newest videos that credit a music generation model.",
+     "description": "Newest videos that credit a music generation model or workflow.",
      "models": [model["name"] for model in MUSIC_MODELS]},
     {"id": "latest", "name": "Latest videos",
      "description": "Every new video, newest first."},
@@ -193,6 +205,14 @@ def _still(raw: dict, url: str) -> str:
     return str(thumbnail.get("url") or "") or video_still_url(url, STILL_WIDTH)
 
 
+def _playback(url: str) -> dict:
+    """The original file to play, and the transcode for a browser that cannot decode it.
+
+    Also applied to saved hub entries, which may hold a URL from before this choice.
+    """
+    return {"videoUrl": video_original_url(url), "fallbackUrl": video_playback_url(url, PLAYBACK_WIDTH)}
+
+
 def video_entry(raw: dict, source: str | None = None) -> dict | None:
     """The playback view of one listing row, or None for anything that is not a video."""
     if raw.get("type") != "video" or not raw.get("url"):
@@ -208,7 +228,7 @@ def video_entry(raw: dict, source: str | None = None) -> dict | None:
         "width": item["width"], "height": item["height"],
         "browsingLevel": item["browsingLevel"], "baseModel": item["baseModel"],
         "stats": item["stats"], "stillUrl": _still(raw, item["url"]),
-        "videoUrl": video_playback_url(item["url"], PLAYBACK_WIDTH),
+        **_playback(item["url"]),
     }
     if source:
         entry["source"] = source
@@ -338,7 +358,10 @@ class Queue:
 
     def ensure(self, count: int) -> None:
         with self.lock:
-            budget = [MAX_PAGES_PER_CALL]
+            # Choosing the newest entry needs a page from every feed, so the first fill
+            # may read each feed once even when there are more feeds than the cap.
+            budget = [max(MAX_PAGES_PER_CALL,
+                          sum(not feed.buffer and not feed.exhausted for feed in self.feeds))]
             while len(self.items) < count:
                 entry = self._next(budget)
                 if entry is None:
@@ -612,8 +635,8 @@ class MusicScout:
                 raise HubBuilding(job["done"], job["total"], job["name"])
             rows = self._hub_rows()
         # Saved entries are shared between hubs, so the source is named as they are served.
-        entries = [{**entry, "source": name} for key in creators if key in rows
-                   for entry in json.loads(rows[key][4])]
+        entries = [{**entry, **_playback(entry["videoUrl"]), "source": name}
+                   for key in creators if key in rows for entry in json.loads(rows[key][4])]
         return sorted(entries, key=lambda entry: str(entry.get("createdAt") or ""), reverse=True)
 
     def mark_member(self, collection_id: int, image_id: int) -> None:

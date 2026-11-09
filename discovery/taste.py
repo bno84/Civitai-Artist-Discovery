@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import math
+import os
 from pathlib import Path
 import random
 import sqlite3
@@ -22,6 +23,7 @@ import urllib.error
 from .civitai import API_LANE
 from .social import CivitaiHTTPError, SocialClient, auth_status
 from .retry import retry_after_seconds
+from .pagination import PageProgress, PaginationStopped
 
 # Civitai's own reaction set. Dislike is collected so reconciliation stays complete,
 # but the dashboard only names it when the user actually has some.
@@ -50,6 +52,18 @@ TAG_BOOST_CAP = 3.0
 MIN_PAUSE = 5.0
 MAX_PAUSE = 5.8
 MAX_ATTEMPTS = 5
+HIDDEN_PREFERENCES_RETRY_SECONDS = 300
+
+
+class IncompleteProfileSnapshot(RuntimeError):
+    pass
+
+
+def protect_profile_snapshot(previous: int, observed: int) -> None:
+    # Empty or sharply truncated successful responses are not proof that the
+    # owner removed their history. Prefer stale local data over silent loss.
+    if previous and (observed == 0 or (previous >= 20 and observed * 2 < previous)):
+        raise IncompleteProfileSnapshot('Civitai returned an unusually small profile snapshot; cached history was kept.')
 
 
 def _retry_wait(error: CivitaiHTTPError, attempt: int) -> float:
@@ -95,6 +109,8 @@ class TasteStore:
         self.lock = threading.RLock()
         self.cancel = threading.Event()
         self.sync_thread: threading.Thread | None = None
+        self._hidden_preferences_thread: threading.Thread | None = None
+        self._hidden_preferences_retry_at = 0.0
         self.job: dict = {"running": False, "phase": "idle", "images": 0, "pages": 0,
                           "message": "", "error": None, "startedAt": None}
         self._initialize()
@@ -268,8 +284,16 @@ class TasteStore:
     def _require_account(self, db) -> int:
         """Drop stored rows if a different account connected since the last sync."""
         account = int(auth_status().get("id") or 0)
+        if account<=0:
+            raise RuntimeError('A verified account is required; cached profile was preserved')
         stored = self._state(db, "account_id")
         if stored is not None and str(stored) != str(account):
+            # Keep the previous 3.0 account snapshot before isolating a new login.
+            # This never reads or copies an installed 2.x database.
+            snapshots=self.root/'accounts';snapshots.mkdir(exist_ok=True)
+            with sqlite3.connect(self.db_path) as source, sqlite3.connect(
+                    snapshots/f'{int(stored)}-{time.time_ns()}.sqlite3') as destination:
+                source.backup(destination)
             for table in ACCOUNT_SCOPED_TABLES:
                 db.execute(f"DELETE FROM {table}")
             # Timestamps, sample totals, and sync cursors describe the old account too.
@@ -310,6 +334,10 @@ class TasteStore:
         with self.connect() as db:
             job["lastSyncAt"] = self._state(db, "last_sync_at")
             job["hasData"] = bool(db.execute("SELECT 1 FROM reacted_images LIMIT 1").fetchone())
+            job['lastAttemptAt']=self._state(db,'last_attempt_at')
+            job['lastError']=self._state(db,'last_sync_error')
+            job['resumable']=bool(self._state(db,'sync_checkpoint'))
+            job['freshnessSeconds']=86400
         return job
 
     def start_sync(self) -> dict:
@@ -373,8 +401,12 @@ class TasteStore:
             # first page while both observe the old account id.
             with self.lock, self.connect() as db:
                 account = self._require_account(db)
-                sync_id = int(self._state(db, "sync_id", 0) or 0) + 1
+                checkpoint=json.loads(self._state(db,'sync_checkpoint','null'))
+                if checkpoint and time.time()-checkpoint.get('savedAt',0)>86400:checkpoint=None
+                sync_id = checkpoint['syncId'] if checkpoint else int(self._state(db, "sync_id", 0) or 0) + 1
                 self._set_state(db, "sync_id", sync_id)
+                self._set_state(db,'last_attempt_at',_now())
+                prior_count = db.execute('SELECT count(*) FROM reacted_images').fetchone()[0]
 
             # Tags are by far the heaviest part of a page and never change for an image
             # already stored, so a refresh asks for the listing only and fetches tags for
@@ -383,11 +415,17 @@ class TasteStore:
                 known = {row["image_id"] for row in db.execute("SELECT image_id FROM reacted_tags")}
             incremental = bool(known)
 
-            cursor, pages, total, fresh, observed = None, 0, 0, [], set()
-            while True:
+            cursor = checkpoint['cursor'] if checkpoint else None
+            pages = checkpoint['pages'] if checkpoint else 0
+            total = checkpoint['total'] if checkpoint else 0
+            fresh, observed = [], set()
+            progress = PageProgress(cursor, page_limit=10000)
+            while not checkpoint or cursor is not None:
+                progress.before_request()
                 page = self._page(client, cursor=cursor, limit=PAGE_SIZE,
                                   reactions=ALL_REACTIONS, with_tags=not incremental)
                 items = page["items"]
+                progress.observe(page['nextCursor'], bool(items))
                 self._store_page(items, sync_id, account)
                 observed.update(item["id"] for item in items
                                 if isinstance(item, dict) and isinstance(item.get("id"), int))
@@ -399,6 +437,9 @@ class TasteStore:
                 self._progress(images=total, pages=pages,
                                message=f"Read {total:,} reacted images from Civitai…")
                 cursor = page["nextCursor"]
+                with self.connect() as db:
+                    self._set_state(db,'sync_checkpoint',json.dumps({'syncId':sync_id,'cursor':cursor,
+                        'pages':pages,'total':total,'savedAt':time.time()}))
                 if cursor is None:
                     break
                 self._pause()
@@ -406,6 +447,10 @@ class TasteStore:
             # Only a run that reached the final page may retire rows, otherwise a
             # cancelled sync would delete reactions that simply were not reached yet.
             with self.connect() as db:
+                # Count persisted markers, including earlier pages of a resumed
+                # sync. Page totals can contain duplicates and are not evidence.
+                observed_count = db.execute('SELECT count(*) FROM reacted_images WHERE last_sync=?', (sync_id,)).fetchone()[0]
+                protect_profile_snapshot(prior_count, observed_count)
                 # The observed ids are the authoritative completed snapshot. Refreshing
                 # their marker in one transaction also protects reconciliation from a
                 # status/read transaction landing precisely between two fast mock pages.
@@ -421,6 +466,11 @@ class TasteStore:
                            "(SELECT image_id FROM reacted_images WHERE last_sync<>?)", (sync_id,))
                 db.execute("DELETE FROM reacted_images WHERE last_sync<>?", (sync_id,))
 
+            if incremental:
+                with self.connect() as db:
+                    fresh = [row['image_id'] for row in db.execute(
+                        'SELECT image_id FROM reacted_images WHERE last_sync=?', (sync_id,))
+                        if row['image_id'] not in known]
             if incremental and fresh:
                 self._progress(message=f"Reading tags for {len(fresh):,} new images…")
                 self._fetch_reacted_tags(client, fresh)
@@ -447,6 +497,7 @@ class TasteStore:
 
             with self.connect() as db:
                 self._set_state(db, "last_sync_at", _now())
+                db.execute("DELETE FROM sync_state WHERE key IN ('sync_checkpoint','last_sync_error')")
             self._progress(running=False, phase="complete", error=None,
                            message=f"Updated {total:,} reacted images in "
                                    f"{int(time.monotonic() - started)} seconds.")
@@ -454,6 +505,10 @@ class TasteStore:
             self._progress(running=False, phase="stopped",
                            message="Stopped. Everything already read was kept.")
         except Exception as error:  # noqa: BLE001
+            with self.connect() as db:
+                self._set_state(db,'last_sync_error','Synchronization could not finish; cached profile was kept.')
+                if isinstance(error, (IncompleteProfileSnapshot, PaginationStopped)):
+                    db.execute("DELETE FROM sync_state WHERE key='sync_checkpoint'")
             self._progress(running=False, phase="error", error=str(error)[:300],
                            message="Could not finish reading your reactions from Civitai.")
 
@@ -528,6 +583,8 @@ class TasteStore:
         from .social import following_ids
         ids = following_ids(client.query("user.getFollowingUsers", {}))
         with self.connect() as db:
+            previous = db.execute('SELECT count(*) FROM followed_creators').fetchone()[0]
+            protect_profile_snapshot(previous, len(ids))
             db.execute("DELETE FROM followed_creators")
             db.executemany("INSERT OR IGNORE INTO followed_creators(creator_id) VALUES(?)",
                            [(value,) for value in sorted(ids)])
@@ -638,9 +695,14 @@ class TasteStore:
         Read-only, and it replaces rather than merges: unhiding something on Civitai has
         to take effect here too, which a merge would quietly prevent.
         """
+        try:expected_account=auth_status().get('id')
+        except RuntimeError:expected_account=None
         payload = (client or SocialClient()).query("hiddenPreferences.getHidden", {})
         if not isinstance(payload, dict):
             raise RuntimeError("Civitai returned unexpected content controls")
+        # Validate completeness before replacing either gallery's shared mirror.
+        from .community import content_profile
+        content_profile(payload,(1,2,4,8,16))
 
         def named(rows):
             for row in rows or []:
@@ -651,12 +713,15 @@ class TasteStore:
                     for reason, rows in (("hidden", payload.get("hiddenUsers")),
                                          # Someone who blocked this account should not be
                                          # surfaced to them either.
-                                         ("blocked", payload.get("blockedByUsers")))
+                                         ("blocked", payload.get("blockedByUsers")),
+                                         ("blocked", payload.get("blockedUsers")))
                     for row in named(rows) if row.get("id")]
         tags = [(int(row["id"]), str(row.get("name") or "").casefold())
-                for row in named(payload.get("hiddenTags")) if row.get("id") and row.get("name")]
+                for row in named(payload.get("hiddenTags")) if row.get("id") and row.get("name") and not row.get("nsfwLevel")]
         images = []
         for row in payload.get("hiddenImages") or []:
+            if isinstance(row,dict) and row.get("tagId") is not None:continue
+            if isinstance(row,dict) and row.get('hidden') is False:continue
             value = row.get("id") if isinstance(row, dict) else row
             try:
                 images.append((int(value),))
@@ -664,6 +729,8 @@ class TasteStore:
                 continue
 
         with self.lock, self.connect() as db:
+            if expected_account is not None and auth_status().get('id')!=expected_account:
+                raise RuntimeError('Account changed while reading content controls')
             db.execute("DELETE FROM hidden_creators")
             db.execute("DELETE FROM hidden_tags")
             db.execute("DELETE FROM hidden_images")
@@ -671,6 +738,8 @@ class TasteStore:
                            "VALUES(?,?,?)", creators)
             db.executemany("INSERT OR REPLACE INTO hidden_tags(tag_id, tag_name) VALUES(?,?)", tags)
             db.executemany("INSERT OR REPLACE INTO hidden_images(image_id) VALUES(?)", images)
+            self._set_state(db, "hidden_image_preferences", json.dumps({
+                key: payload.get(key, []) for key in ('hiddenTags', 'hiddenImages', 'hiddenImagesImplicit')}))
             self._set_state(db, "hidden_imported_at", _now())
         return {"creators": len(creators), "tags": len(tags), "images": len(images)}
 
@@ -683,21 +752,55 @@ class TasteStore:
         with self.connect() as db:
             return {row["tag_name"] for row in db.execute("SELECT tag_name FROM hidden_tags")}
 
-    def hidden_image_ids(self) -> set[int]:
-        """Images hidden outright, plus any whose known tags the account hides.
+    def ensure_hidden_preferences_current(self):
+        # Legacy reads keep their mirror while one background request recovers source
+        # information. Offline browsing must neither wait for Civitai nor retry per read.
+        if (os.environ.get('CAD_COMMUNITY_MODE') == 'fixture'
+                or os.environ.get('CAD_COMMUNITY_TESTING') == '1'):
+            return
+        with self.lock:
+            with self.connect() as db:
+                refresh = self._state(db, 'hidden_imported_at') and not self._state(db, 'hidden_image_preferences')
+            if (not refresh or time.monotonic() < self._hidden_preferences_retry_at
+                    or (self._hidden_preferences_thread is not None
+                        and self._hidden_preferences_thread.is_alive())):
+                return
+            self._hidden_preferences_retry_at = time.monotonic() + HIDDEN_PREFERENCES_RETRY_SECONDS
 
-        Tags are only known for images the app has already read them for, so this is a
-        floor rather than a guarantee — which is why creators, where the match is exact,
-        do the heavy lifting.
-        """
+            def recover():
+                try:
+                    self.import_hidden_preferences()
+                except Exception:  # Keep the previous mirror; a later read can retry.
+                    pass
+
+            self._hidden_preferences_thread = threading.Thread(
+                target=recover, name='content-control-recovery', daemon=True)
+            self._hidden_preferences_thread.start()
+
+    def hidden_image_ids(self, *, include_tags: bool = True, include_images: bool = True,
+                         levels=(1, 2)) -> set[int]:
+        """Resolve saved exclusions using their source and the active viewing filters."""
+        from dataclasses import replace
+        from .community import content_profile
+        self.ensure_hidden_preferences_current()
         with self.connect() as db:
-            direct = {row["image_id"] for row in db.execute("SELECT image_id FROM hidden_images")}
-            tagged = {row["image_id"] for row in db.execute(
-                "SELECT DISTINCT image_id FROM archive_image_tags "
-                "WHERE tag_name IN (SELECT tag_name FROM hidden_tags)")}
+            raw = self._state(db, 'hidden_image_preferences')
+            if raw:
+                profile = content_profile({**json.loads(raw), 'hiddenUsers': [],
+                    'blockedUsers': [], 'blockedByUsers': []}, levels)
+                direct = replace(profile, apply_tag_filters=include_tags,
+                                 apply_image_filters=include_images).excluded_image_ids()
+            else:
+                # Their source is unknown until recovery succeeds. Do not accidentally
+                # relax legacy tag/rating exclusions through the direct-artwork switch.
+                direct = {row[0] for row in db.execute('SELECT image_id FROM hidden_images')}
+            tagged = {row[0] for row in db.execute(
+                'SELECT DISTINCT image_id FROM archive_image_tags '
+                'WHERE tag_name IN (SELECT tag_name FROM hidden_tags)')} if include_tags else set()
         return direct | tagged
 
     def hidden_summary(self) -> dict:
+        self.ensure_hidden_preferences_current()
         with self.connect() as db:
             counts = {name: db.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
                       for name, table in (("creators", "hidden_creators"),

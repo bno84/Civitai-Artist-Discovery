@@ -15,8 +15,9 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
-CANDIDATE = sys.argv[1] if len(sys.argv) > 1 else "spark"
-OUT = ROOT / "static" / "app.ico"
+CANDIDATE = sys.argv[1] if len(sys.argv) > 1 else "beta"
+OUT = Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / "static" / "app.ico"
+OUT.parent.mkdir(parents=True, exist_ok=True)
 
 BACKDROP = (23, 24, 27)
 LIGHT = (240, 241, 245)
@@ -81,7 +82,14 @@ def fan(size):
     return image
 
 
-BUILDERS = {"compass": compass, "spark": spark, "fan": fan}
+def beta(size):
+    image=spark(size)
+    draw=ImageDraw.Draw(image);unit=size*SCALE/32
+    draw.rounded_rectangle([unit*17,unit*20,unit*31,unit*31],radius=unit*2,fill=(156,102,255))
+    draw.text((unit*20,unit*20),'B',fill=LIGHT,font=__import__('PIL.ImageFont',fromlist=['truetype']).load_default(size=int(unit*10)))
+    return image
+
+BUILDERS = {"compass": compass, "spark": spark, "fan": fan,"beta":beta}
 
 
 def render(name, size):
@@ -98,8 +106,8 @@ if CANDIDATE == "preview":
             strip.paste(render(name, size), (x, (256 - size) // 2))
             x += size + 15
         strip.convert("RGB").save(out / f"icon-{name}.png")
-        print(f"preview: {out / f'icon-{name}.png'}")
+        print(f"preview: icon-{name}.png")
 else:
     frames = [render(CANDIDATE, size) for size in SIZES]
     frames[0].save(OUT, format="ICO", sizes=[(s, s) for s in SIZES])
-    print(f"wrote {OUT} ({OUT.stat().st_size:,} bytes, '{CANDIDATE}', sizes {SIZES})")
+    print(f"wrote {OUT.name} ({OUT.stat().st_size:,} bytes, '{CANDIDATE}', sizes {SIZES})")

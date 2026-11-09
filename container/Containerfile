@@ -17,7 +17,9 @@ COPY discovery/ discovery/
 COPY static/ static/
 COPY --chmod=755 container/open_url.py container/
 
-# /app/data is the portable data folder the app already uses beside a source checkout;
-# mount it from the host so archives and settings outlive the container.
-VOLUME /app/data
-ENTRYPOINT ["python", "/app/server.py"]
+# Data lives in the folder compose.yaml mounts and names in CIVITAI_HISTORY_DATA_DIR
+# (data-3.0/ beside the checkout). No VOLUME here: an anonymous volume would hide a
+# missing mount instead of failing, and would outlive the container.
+# --stable runs the reviewed stable release on the Production project, with the
+# hosted Community, instead of the Development beta a plain source launch uses.
+ENTRYPOINT ["python", "/app/server.py", "--stable"]

@@ -1,4 +1,5 @@
 """Controlled missing and transient media across real gallery adapters and browsers."""
+import test_safety  # Refuse live application endpoints and isolate all test data.
 
 from functools import partial
 from http.server import ThreadingHTTPServer
@@ -23,6 +24,9 @@ def artwork(i):
     item['thumbnailUrl'] = f'https://image.civitai.com/unavailable/preview/{i}.jpeg'
     if i == 1003:
         item.pop('thumbnailUrl')  # Older archives need only an original URL.
+    if i == 2:
+        item['availabilitySources']=[item['thumbnailUrl'],item['url']]
+        item['url']=item['thumbnailUrl']='/cached-unavailable/2.jpeg'
     return item
 
 
@@ -105,7 +109,13 @@ try:
                         # Use the production creator-history adapter directly, without scrolling/seen writes.
                         page.evaluate("() => openTimeMachineCreator('Studio_001')")
                 grid = '#gallery' if surface == 'daily' else '#timeMachineCreatorGrid' if surface == 'historical-creator' else '#timeMachineGrid'
-                page.wait_for_function("selector => document.querySelector(`${selector} [data-username='studio_001']`)?.dataset.id === '1001'", arg=grid)
+                try:
+                    page.wait_for_function("selector => document.querySelector(`${selector} [data-username='studio_001']`)?.dataset.id === '1001'", arg=grid)
+                except Exception:
+                    print(json.dumps({'browser':name,'surface':surface,'errors':errors,'probes':probes,
+                        'requests':requests,'cards':page.locator(grid+' .creator-card').evaluate_all(
+                            'cards=>cards.map(c=>({id:c.dataset.id,username:c.dataset.username,busy:c.getAttribute("aria-busy"),source:c.querySelector("img")?.currentSrc}))')}),flush=True)
+                    raise
                 first = page.locator(grid + ' [data-username="studio_001"]')
                 if surface != 'historical-creator':
                     page.wait_for_function("selector => !document.querySelector(`${selector} [data-username='studio_002']`)", arg=grid)

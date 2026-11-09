@@ -136,6 +136,23 @@ class SocialClient:
             with urllib.request.urlopen(request, timeout=20) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as error:
+            if error.code == 404 and getattr(request, '_optional_image_batch', False):
+                # tRPC returns HTTP 404 for an all-missing read batch. Admit only
+                # explicit per-image NOT_FOUND envelopes, never a proxy/plain 404.
+                raw = error.read(1024 * 1024 + 1)
+                try:
+                    value = json.loads(raw) if len(raw) <= 1024 * 1024 else None
+                    if isinstance(value, list) and value and all(
+                        isinstance(item, dict) and
+                        item.get('error', {}).get('json', {}).get('data', {}).get('httpStatus') == 404 and
+                        item['error']['json']['data'].get('code') == 'NOT_FOUND' and
+                        item['error']['json']['data'].get('path', 'image.get') == 'image.get'
+                        for item in value
+                    ):
+                        return value
+                except (ValueError, AttributeError, TypeError):
+                    pass
+                raise CivitaiHTTPError(404, 'Civitai returned an invalid missing-image batch') from error
             detail = redact_sensitive(error.read(4096).decode("utf-8", "replace"))[:600]
             raise CivitaiHTTPError(
                 error.code, f"Civitai returned HTTP {error.code}: {detail}",
@@ -159,7 +176,9 @@ class SocialClient:
         procedures = ",".join(procedure for _ in payloads)
         inputs = {str(index): {"json": payload} for index, payload in enumerate(payloads)}
         encoded = urllib.parse.quote(json.dumps(inputs, separators=(",", ":")))
-        response = self._request(urllib.request.Request(f"{BASE_URL}/api/trpc/{procedures}?batch=1&input={encoded}"))
+        request = urllib.request.Request(f"{BASE_URL}/api/trpc/{procedures}?batch=1&input={encoded}")
+        request._optional_image_batch = optional and procedure == 'image.get'
+        response = self._request(request)
         if not isinstance(response, list) or len(response) != len(payloads):
             raise RuntimeError("Civitai returned an incomplete query batch")
         for item in response:
@@ -250,8 +269,17 @@ class SocialClient:
 
     def comment_on_image(self, image_id: int, content: str) -> object:
         """Post one comment. ``content`` is the HTML Civitai's own editor produces."""
-        return self.mutate("commentv2.upsert", {
+        return self.mutate("commentv3.create", {
             "entityId": int(image_id), "entityType": "image", "content": content,
+        })
+
+    def set_collection_items_status(self, collection_id: int, collection_item_ids: list[int],
+                                    status: str) -> object:
+        """Accept or reject items in a collection the account owns or manages."""
+        return self.mutate("collection.updateCollectionItemsStatus", {
+            "collectionId": int(collection_id),
+            "collectionItemIds": [int(value) for value in collection_item_ids],
+            "status": status,
         })
 
     def image_collection_ids(self, image_ids: list[int]) -> dict[int, set[int] | None]:
