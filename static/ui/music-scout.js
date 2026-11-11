@@ -80,7 +80,13 @@ export function mountMusicScout() {
     });
     // A browser without an HEVC decoder may load the file as sound over a blank picture.
     video.addEventListener('loadedmetadata', () => {
-      if (video.getAttribute('src') && !video.videoWidth) fallBack(video);
+      if (video.getAttribute('src') && !video.videoWidth) { fallBack(video); return; }
+      if (resumePosition?.id === video.dataset.itemId) {
+        if (Number.isFinite(video.duration) && video.duration > 0) {
+          video.currentTime = Math.min(resumePosition.time, video.duration);
+        }
+        resumePosition = null;
+      }
     });
     video.addEventListener('canplay', () => {
       if (video !== current) return;
@@ -89,6 +95,7 @@ export function mountMusicScout() {
     });
   }
 
+  let resumePosition = null;
   let loadTimer = 0;
   // A stalled download is usually one hung connection; starting it again tends to work.
   function watchLoad(video, item, attempt = 1) {
@@ -362,6 +369,14 @@ export function mountMusicScout() {
     });
   }
   $('msRemoveOpen').addEventListener('click', () => { resumeAfterDialog = false; });
+  $('msCollectalytics').addEventListener('click', event => {
+    event.preventDefault();
+    const item = state.items[state.index];
+    if (!item) return;
+    window.CivitaiCollectalytics?.openCreator(state.catalog.musicFocus.collectionId, item.username);
+    $('tabCollectalytics').click();
+  });
+
   for (const id of ['msCreator', 'msCivitai']) $(id).addEventListener('click', () => current.pause());
 
   function openAdd(item) {
@@ -559,6 +574,7 @@ export function mountMusicScout() {
     remember();
     showVideoError('');
     const item = state.items[index];
+    if (resumePosition?.id !== String(item.id)) resumePosition = null;
     const next = state.items[index + 1];
     if (state.active) {
       // The spare element already buffering this item becomes the player.
@@ -689,6 +705,9 @@ export function mountMusicScout() {
       // video the reader was on.
       clearTimeout(viewedTimer);
       clearTimeout(loadTimer);
+      if (current.dataset.itemId && current.currentTime > 0) {
+        resumePosition = { id: current.dataset.itemId, time: current.currentTime };
+      }
       release(current); release(spare);
       return;
     }

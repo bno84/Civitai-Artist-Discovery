@@ -227,6 +227,12 @@ export function mountCollectalytics() {
       state.collections = collections;
       renderPicker();
       if (!collections.length) { message('No collections found that you own or follow.'); return; }
+      if (state.creatorTarget && !collections.some(item => item.id === state.selected)) {
+        state.creatorTarget = null;
+        message('Own or follow Music Focus on Civitai to view its creator statistics.', true);
+        $('caBody').classList.add('hidden');
+        return;
+      }
       const keep = collections.find(item => item.id === state.selected);
       await open(keep ? keep.id : collections[0].id, false);
     } catch (error) {
@@ -259,6 +265,7 @@ export function mountCollectalytics() {
 
   async function open(id, refresh) {
     const token = ++state.loading;
+    if (state.creatorTarget?.collectionId !== id) state.creatorTarget = null;
     state.selected = id;
     state.creatorKey = null;
     state.day = null;
@@ -543,7 +550,12 @@ export function mountCollectalytics() {
     renderCreatorOptions();
     // Opens on whoever was added last: the question is usually about the newest pick.
     const newest = state.analysis.dated[0];
-    if (newest) selectCreator(newest.creatorKey, false);
+    if (state.creatorTarget) {
+      const target = state.creatorTarget.username;
+      state.creatorTarget = null;
+      $('caCreator').value = target;
+      selectCreator(findCreator(target)?.key ?? null, true);
+    } else if (newest) selectCreator(newest.creatorKey, false);
     else renderCreator();
     renderSnippet();
   }
@@ -1003,6 +1015,7 @@ export function mountCollectalytics() {
     if (state.account === undefined) { state.account = account; return; }
     if (account === state.account) return;
     state.account = account;
+    state.creatorTarget = null;
     state.epoch++;
     state.collections = null;
     state.report = null;
@@ -1031,6 +1044,13 @@ export function mountCollectalytics() {
   });
 
   return {
+    openCreator(collectionId, username) {
+      state.selected = collectionId;
+      state.creatorTarget = { collectionId, username };
+      state.stale = false;
+      if (state.collections) open(collectionId, false);
+      // Otherwise setActive loads the collection list using this selection.
+    },
     setActive(active) {
       state.active = active;
       if (!active) return;

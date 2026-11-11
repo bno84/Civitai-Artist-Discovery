@@ -33,6 +33,11 @@
 .ms-reactions .ms-collection.selected { background: var(--accent-surface); box-shadow: inset 0 0 0 1px var(--accent); }
 .ms-meta-main a { color: var(--text); font-weight: 700; font-size: 16px; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ms-meta-main a:hover { color: var(--accent); }
+.ms-meta-main .ms-stats-link { display: inline-flex; align-items: center; justify-content: center; align-self: center; flex: none; width: 28px; height: 28px; margin: -4px 0 -4px -6px; border-radius: 4px; color: var(--muted); }
+.ms-meta-main .ms-stats-link:hover, .ms-meta-main .ms-stats-link:focus-visible { color: var(--text); background: var(--surface-raised); }
+.ms-stats-link:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.ms-stats-link svg { display: block; }
+
 .ms-meta-main small { color: var(--muted); font-size: 13px; }
 .ms-meta-actions { display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 13px; }
 .ms-meta-actions a { color: var(--accent); text-decoration: none; }

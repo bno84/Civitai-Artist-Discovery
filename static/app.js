@@ -1922,15 +1922,27 @@ window.addEventListener('shared-artist-hidden', () => {
 });
 const viewScroll = { gallery: 0, discovery: 0, timemachine: 0, music: 0, collectalytics: 0 };
 const ACTIVE_VIEW_KEY='civitai-active-view';
+const VIEW_NAMES = ['community', 'gallery', 'discovery', 'timemachine', 'music', 'collectalytics'];
+let viewHistoryStarted = false;
 function readActiveView() {
+  if (VIEW_NAMES.includes(history.state?.discoveryView)) return history.state.discoveryView;
   try {
     const view=sessionStorage.getItem(ACTIVE_VIEW_KEY);
-    if(['community','gallery','discovery','timemachine','music','collectalytics'].includes(view))return view;
+    if (VIEW_NAMES.includes(view)) return view;
   } catch(_) {}
   return 'community';
 }
-function showView(name) {
+function showView(name, recordHistory = true) {
+  if (!VIEW_NAMES.includes(name)) return;
   if (name==='community' && !oauthConnected) return;
+  // Seed the current document rather than adding a startup entry. Traversal must
+  // never push a new entry, or Back would trap the reader between the same tabs.
+  if (!viewHistoryStarted || recordHistory) {
+    const entry = { ...history.state, discoveryView: name };
+    if (!viewHistoryStarted) history.replaceState(entry, '');
+    else if (history.state?.discoveryView !== name) history.pushState(entry, '');
+    viewHistoryStarted = true;
+  }
   navigationVersion++;
   const previous = currentView;
   if (previous !== name) viewScroll[previous] = window.scrollY;
@@ -2004,6 +2016,11 @@ function showView(name) {
     window.CivitaiUI.showPageError($("discoveryMessage"), error.message, loadProfile);
   });
 }
+// Keep the mounted views alive: Music Scout retains its queue and current item.
+window.addEventListener('popstate', event => {
+  const view = event.state?.discoveryView;
+  if (VIEW_NAMES.includes(view)) showView(view, false);
+});
 $("tabGallery").onclick = () => {
   showView("gallery");
   if (!dayBuilt && !activeBuildSegment && !activeRebuild) openDay().catch(showLoadError);

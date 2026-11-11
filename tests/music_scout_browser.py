@@ -205,6 +205,25 @@ try:
         page.wait_for_function("src => [...document.querySelectorAll('#msScreen video')].some(video => !video.hidden && video.getAttribute('src') === src)",
                                arg=QUEUE[4]["videoUrl"])
 
+        # Browser history restores the mounted queue, without fetching it afresh.
+        queue_reads = len(requests["queue"])
+        page.locator("#msCollectalytics").click()
+        page.locator("#collectalytics:not(.hidden)").wait_for()
+        history_length = page.evaluate("history.length")
+        page.go_back()
+        page.locator("#musicScout:not(.hidden)").wait_for()
+        counter(page, "5 / 20+")
+        page.wait_for_function("src => [...document.querySelectorAll('#msScreen video')].some(video => !video.hidden && video.getAttribute('src') === src)",
+                               arg=QUEUE[4]["videoUrl"])
+        assert len(requests["queue"]) == queue_reads
+        page.go_forward()
+        page.locator("#collectalytics:not(.hidden)").wait_for()
+        page.go_back()
+        page.locator("#musicScout:not(.hidden)").wait_for()
+        assert page.evaluate("history.length") == history_length
+        page.locator("#tabMusicScout").click()
+        assert page.evaluate("history.length") == history_length
+
         # A reload reopens the tab and the queue at the same video, from the server's copy.
         before = len(requests["queue"])
         page.reload(wait_until="networkidle")
