@@ -87,6 +87,7 @@
 }
 
 .ms-reactions .ms-collection.read-only { cursor: default; }
+.ms-reactions .ms-collection.pending { filter: none; opacity: 1; outline: 1px dashed var(--accent); outline-offset: -1px; }
 .ms-focus-comment { display: grid; gap: 6px; }
 .ms-focus-comment span { font-weight: 700; }
 .ms-focus-comment small { color: var(--muted); font-size: 12px; }

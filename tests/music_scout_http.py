@@ -3,7 +3,8 @@
 Covers the routes and guards the queues depend on: the catalog, hidden creators and
 images left out of a queue, the viewing levels sent upstream, viewed marks, signed-out
 answers, reactions on a video only Music Scout has shown, collection markers, and the
-owner-only Music Focus add with its comment-first ordering. No request leaves the test.
+owner-only Music Focus add with its comment-first ordering, and submissions to Movies
+Museum for its curator to review. No request leaves the test.
 """
 import test_safety  # Fail closed before any test network request.
 
@@ -15,9 +16,9 @@ from unittest.mock import patch
 
 import server
 from discovery import musicscout
-from discovery.musicscout import H3_MUSEUM, MUSIC_FOCUS, MusicScout
+from discovery.musicscout import MOVIES_MUSEUM, MUSIC_FOCUS, MusicScout
 
-FOCUS, MUSEUM = MUSIC_FOCUS["collectionId"], H3_MUSEUM["collectionId"]
+FOCUS, MUSEUM = MUSIC_FOCUS["collectionId"], MOVIES_MUSEUM["collectionId"]
 
 
 def row(image_id, name, minute):
@@ -49,12 +50,18 @@ class FakeClient:
     fail_add = False
     fail_readback = False
     fail_comment = False
+    # The reader's own submissions to Movies Museum, which Civitai lists as REVIEW.
+    museum_pending = set()
 
     def query(self, procedure, payload):
         if procedure == "image.getInfinite":
             ids = {FOCUS: [803], MUSEUM: [801]}[payload["collectionId"]]
-            return {"items": [{"id": value, "user": {"username": "Alpha"}} for value in ids],
-                    "nextCursor": None}
+            items = [{"id": value, "user": {"username": "Alpha"}, "collectionItemStatus": "ACCEPTED"}
+                     for value in ids]
+            if payload["collectionId"] == MUSEUM:
+                items += [{"id": value, "user": {"username": "Pending"}, "collectionItemStatus": "REVIEW"}
+                          for value in FakeClient.museum_pending]
+            return {"items": items, "nextCursor": None}
         if procedure == "image.get":
             return self._image(payload["id"])
         raise AssertionError(procedure)
@@ -135,9 +142,9 @@ with patch.object(server, "MUSIC_SCOUT", scout), \
         status, catalog = call("GET", "/api/music/queues")
         assert status == 200, catalog
         assert [queue["id"] for queue in catalog["queues"]] == [
-            "per-creator", "music-models", "latest", "music-focus", "mf-hub", "h3-museum",
+            "per-creator", "music-models", "latest", "music-focus", "mf-hub", "movies-museum",
             "museum-hub"], catalog
-        assert [collection["key"] for collection in catalog["collections"]] == ["music-focus", "h3-museum"]
+        assert [collection["key"] for collection in catalog["collections"]] == ["music-focus", "movies-museum"]
 
         status, page = call("GET", "/api/music/queue?queue=latest&limit=10")
         assert status == 200, page
@@ -184,8 +191,46 @@ with patch.object(server, "MUSIC_SCOUT", scout), \
         assert status == 200, members
         assert members == {"canAdd": True, "collections": {
             "music-focus": {"801": False, "803": True},
-            "h3-museum": {"801": True, "803": False}}}, members
+            "movies-museum": {"801": True, "803": False}}, "canSubmit": ["movies-museum"],
+            "pending": {"music-focus": [], "movies-museum": []}}, members
         assert call("GET", "/api/music/collection-status?imageId=999")[0] == 400
+
+        # -- submissions to Movies Museum, for its curator to review --------------------
+        FakeClient.calls = []
+        # Only a collection open to submissions takes them; Music Focus does not.
+        status, answer = call("POST", "/api/music/submit", {"imageId": 803, "collection": "music-focus"})
+        assert status == 400 and "submissions" in answer["error"], answer
+        assert call("POST", "/api/music/submit", {"imageId": 999, "collection": "movies-museum"})[0] == 400
+        # Already listed there: nothing is sent.
+        status, answer = call("POST", "/api/music/submit", {"imageId": 801, "collection": "movies-museum"})
+        assert status == 200 and answer["alreadyIn"] and not answer["submitted"], answer
+        assert FakeClient.calls == [], FakeClient.calls
+        # A new submission is a plain save, with no comment.
+        status, answer = call("POST", "/api/music/submit", {"imageId": 803, "collection": "movies-museum"})
+        assert status == 200 and answer["submitted"] and not answer["inCollection"], answer
+        assert FakeClient.calls == [("add", 803, MUSEUM)], FakeClient.calls
+        # Once listed, Civitai reports it to its submitter as REVIEW: pending, not a member,
+        # and its creator is not counted for the hub until the curator accepts it.
+        FakeClient.museum_pending, FakeClient.calls = {803}, []
+        scout.members.pop(MUSEUM, None)
+        status, members = call("GET", "/api/music/collection-status?imageId=801&imageId=803")
+        assert members["collections"]["movies-museum"] == {"801": True, "803": False}, members
+        assert members["pending"]["movies-museum"] == ["803"], members
+        assert "pending" not in scout.collection_creators(MUSEUM), "a pending submission joined the hub"
+        status, answer = call("POST", "/api/music/submit", {"imageId": 803, "collection": "movies-museum"})
+        assert status == 200 and answer["alreadySubmitted"] and FakeClient.calls == [], (answer, FakeClient.calls)
+        FakeClient.museum_pending = set()
+        scout.members.pop(MUSEUM, None)
+        # Civitai's refusal reaches the reader, who can still submit on Civitai.
+        FakeClient.fail_add = True
+        status, answer = call("POST", "/api/music/submit", {"imageId": 803, "collection": "movies-museum"})
+        assert status == 502 and "add failed" in answer["error"] and "on Civitai" in answer["error"], answer
+        FakeClient.fail_add = False
+        # Signed out, it is refused cleanly.
+        signed_in["value"] = False
+        status, answer = call("POST", "/api/music/submit", {"imageId": 803, "collection": "movies-museum"})
+        assert status == 403 and "Sign in" in answer["error"], answer
+        signed_in["value"] = True
 
         # Already in: nothing is posted.
         FakeClient.held = {803: {FOCUS}}

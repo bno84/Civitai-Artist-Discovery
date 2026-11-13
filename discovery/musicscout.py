@@ -82,11 +82,13 @@ MUSIC_FOCUS = {"key": "music-focus", "collectionId": 17980935, "name": "Music Fo
                               'href="https://civitai.red/collections/17980935?sort=Recently+Added"><strong>Music '
                               'Focus</strong> 🎸</a> and is added to the collection! 🎧 Give it '
                               'a listen and share more jams if you like.</p>'}
-# Someone else's curated collection of great videos, shown read-only.
-H3_MUSEUM = {"key": "h3-museum", "collectionId": 18403457, "name": "H3 Movies Museum 🎬",
-             "icon": "🎬", "url": "https://civitai.red/collections/18403457"}
+# Someone else's curated collection of great videos. It takes submissions: anyone signed
+# in may send a video, which waits for its curator's review before it is listed.
+MOVIES_MUSEUM = {"key": "movies-museum", "collectionId": 18403457, "name": "Movies Museum 🎬",
+                 "icon": "🎬", "url": "https://civitai.red/collections/18403457",
+                 "curator": "Sillycat83", "submissions": True}
 # Each shows its membership next to the reactions, and has its own queue and hub.
-COLLECTIONS = (MUSIC_FOCUS, H3_MUSEUM)
+COLLECTIONS = (MUSIC_FOCUS, MOVIES_MUSEUM)
 COLLECTION_BY_KEY = {collection["key"]: collection for collection in COLLECTIONS}
 # Membership is read from the collection itself, so anyone signed in sees the same
 # answer the owner does. Reread at most this often; an add made here updates it at once.
@@ -137,14 +139,14 @@ QUEUES = (
      "description": "Newest videos from creators who have been collected in Music Focus, "
                     "capped per creator. Needs sign-in.",
      "perCreator": True, "signIn": True, "hub": "music-focus"},
-    {"id": "h3-museum", "name": H3_MUSEUM["name"],
-     "description": "Sillycat83's collection of great videos, most recently added first. "
-                    "Needs sign-in.",
-     "signIn": True, "collection": "h3-museum"},
+    {"id": "movies-museum", "name": MOVIES_MUSEUM["name"],
+     "description": "Sillycat83's collection of great videos, open to submissions, most "
+                    "recently added first. Needs sign-in.",
+     "signIn": True, "collection": "movies-museum"},
     {"id": "museum-hub", "name": "Museum hub",
-     "description": "Newest videos from creators collected in H3 Movies Museum, capped per "
+     "description": "Newest videos from creators collected in Movies Museum, capped per "
                     "creator. Needs sign-in.",
-     "perCreator": True, "signIn": True, "hub": "h3-museum"},
+     "perCreator": True, "signIn": True, "hub": "movies-museum"},
 )
 PER_CREATOR_QUEUES = {queue["id"] for queue in QUEUES if queue.get("perCreator")}
 
@@ -235,6 +237,14 @@ def video_entry(raw: dict, source: str | None = None) -> dict | None:
     return entry
 
 
+def accepted_item(raw: dict) -> bool:
+    """Whether a signed-in collection row is in the collection, not waiting or declined.
+
+    Civitai lists the reader's own submissions awaiting review among a collection's items.
+    """
+    return raw.get("collectionItemStatus") in (None, "ACCEPTED")
+
+
 def collection_entry(raw: dict) -> dict | None:
     """The playback view of one signed-in ``image.getInfinite`` row.
 
@@ -306,7 +316,9 @@ class CollectionFeed(Feed):
         value = self.social().query("image.getInfinite", payload)
         value = value if isinstance(value, dict) else {}
         items = value.get("items") if isinstance(value.get("items"), list) else []
-        self.buffer.extend(entry for entry in (collection_entry(raw) for raw in items) if entry)
+        self.buffer.extend(entry for entry in (collection_entry(raw) for raw in items
+                                               if isinstance(raw, dict) and accepted_item(raw))
+                           if entry)
         self.cursor = value.get("nextCursor")
         self.exhausted = not self.cursor or not items
 
@@ -392,7 +404,7 @@ class MusicScout:
         self.lock = threading.Lock()
         # Per collection id: when it was read, its video ids, and its creators' usernames
         # by casefolded key, all from the same read.
-        self.members: dict[int, tuple[float, set[int], dict[str, str]]] = {}
+        self.members: dict[int, tuple[float, set[int], dict[str, str], set[int]]] = {}
         self.member_locks = {collection["collectionId"]: threading.Lock()
                              for collection in COLLECTIONS}
         # One reading job at a time, whichever hub asked: the saved lists are shared.
@@ -477,20 +489,25 @@ class MusicScout:
         return {"queue": queue_id, "offset": offset, **result}
 
     def collection_ids(self, collection_id: int) -> set[int]:
-        """Every video id in a collection. Needs a signed-in client, but not the owner's."""
+        """Every accepted video id in a collection. Needs a signed-in client, not the owner's."""
         return set(self._collection_listing(collection_id)[1])
+
+    def collection_pending(self, collection_id: int) -> set[int]:
+        """The reader's own submissions to a collection that still wait for review."""
+        return set(self._collection_listing(collection_id)[3])
 
     def collection_creators(self, collection_id: int) -> dict[str, str]:
         """Everyone with a video in a collection, by casefolded username."""
         return dict(self._collection_listing(collection_id)[2])
 
-    def _collection_listing(self, collection_id: int) -> tuple[float, set[int], dict[str, str]]:
+    def _collection_listing(self, collection_id: int) -> tuple[float, set[int], dict[str, str], set[int]]:
         with self.member_locks[collection_id]:
             cached = self.members.get(collection_id)
             if cached is not None and time.monotonic() - cached[0] < COLLECTION_TTL_SECONDS:
                 return cached
             client = self.social()
             ids: set[int] = set()
+            pending: set[int] = set()
             creators: dict[str, str] = {}
             cursor = None
             for _ in range(COLLECTION_MAX_PAGES):
@@ -505,6 +522,15 @@ class MusicScout:
                 for row in items:
                     if not isinstance(row, dict) or not row.get("id"):
                         continue
+                    # Civitai lists the reader's own submissions to a collection taking
+                    # them for review alongside its items, marked REVIEW. They are not in
+                    # it until the curator accepts them, and a declined one never is.
+                    status = row.get("collectionItemStatus")
+                    if status == "REVIEW":
+                        pending.add(int(row["id"]))
+                        continue
+                    if not accepted_item(row):
+                        continue
                     ids.add(int(row["id"]))
                     name = str((row.get("user") or {}).get("username") or "").strip()
                     if name:
@@ -512,7 +538,7 @@ class MusicScout:
                 cursor = value.get("nextCursor")
                 if not cursor or not items:
                     break
-            self.members[collection_id] = (time.monotonic(), ids, creators)
+            self.members[collection_id] = (time.monotonic(), ids, creators, pending)
             return self.members[collection_id]
 
     # -- hubs ---------------------------------------------------------------------------
@@ -643,6 +669,12 @@ class MusicScout:
         with self.member_locks[collection_id]:
             if collection_id in self.members:
                 self.members[collection_id][1].add(int(image_id))
+                self.members[collection_id][3].discard(int(image_id))
+
+    def mark_pending(self, collection_id: int, image_id: int) -> None:
+        with self.member_locks[collection_id]:
+            if collection_id in self.members:
+                self.members[collection_id][3].add(int(image_id))
 
     def served_entry(self, image_id: int) -> dict | None:
         with self.lock:

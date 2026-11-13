@@ -45,7 +45,7 @@ QUEUE[1]["fallbackUrl"] = QUEUE[1]["videoUrl"].replace("/transcode=", "/fallback
 server = ThreadingHTTPServer(("127.0.0.1", 0), partial(StaticHandler, directory=str(ROOT / "static")))
 threading.Thread(target=server.serve_forever, daemon=True).start()
 base_url = f"http://127.0.0.1:{server.server_port}"
-requests = {"queue": [], "viewed": [], "reaction": [], "focus": []}
+requests = {"queue": [], "viewed": [], "reaction": [], "focus": [], "submit": []}
 reacted = {}
 
 
@@ -78,7 +78,11 @@ def music_routes(route):
         ids = query["imageId"]
         data = {"canAdd": True, "collections": {
             "music-focus": {value: int(value) in FOCUS_MEMBER for value in ids},
-            "h3-museum": {value: False for value in ids}}}
+            "movies-museum": {value: False for value in ids}}, "canSubmit": ["movies-museum"]}
+    elif path == "/api/music/submit":
+        body = json.loads(request.post_data)
+        requests["submit"].append(body)
+        data = {"imageId": body["imageId"], "inCollection": False, "submitted": True, "alreadyIn": False}
     elif path == "/api/music/focus":
         body = json.loads(request.post_data)
         requests["focus"].append(body["imageId"])
@@ -169,11 +173,24 @@ try:
         assert page.locator('#msReactions button[data-reaction="Heart"] b').text_content() == "3"
         assert requests["reaction"] == [{"imageId": 7004, "reaction": "Heart", "active": True}], requests["reaction"]
 
-        # Collection markers: in Music Focus leads to Civitai for removal, read-only museum.
+        # Collection markers: in Music Focus leads to Civitai for removal.
         focus = page.locator('#msReactions .ms-collection[data-collection="music-focus"]')
-        museum = page.locator('#msReactions .ms-collection[data-collection="h3-museum"]')
+        museum = page.locator('#msReactions .ms-collection[data-collection="movies-museum"]')
         page.wait_for_function("() => document.querySelector('#msReactions .ms-collection.selected')")
-        assert museum.get_attribute("aria-disabled") == "true" and museum.get_attribute("title") == f"Not in {CATALOG['collections'][1]['name']}"
+        museum_name = CATALOG['collections'][1]['name']
+        # The museum is open to submissions: its marker submits for the curator's review.
+        assert museum.get_attribute("aria-disabled") is None and museum.get_attribute("title") == f"Submit to {museum_name}…"
+        museum.click()
+        assert page.locator("#msSubmitDialog").evaluate("dialog => dialog.open")
+        assert page.locator("#msSubmitTitle").text_content() == f"Submit to {museum_name}?"
+        assert page.locator("#msSubmitOpen").get_attribute("href") == QUEUE[3]["civitaiUrl"]
+        page.keyboard.press("ArrowRight")
+        assert page.locator("#msCounter").text_content() == "4 / 20+"
+        page.locator("#msSubmitConfirm").click()
+        page.wait_for_function("() => !document.getElementById('msSubmitDialog').open")
+        page.wait_for_function("() => document.querySelector('#msReactions .ms-collection[data-collection=movies-museum]').classList.contains('pending')")
+        assert requests["submit"] == [{"imageId": 7004, "collection": "movies-museum"}], requests["submit"]
+        assert museum.get_attribute("aria-disabled") == "true" and "waiting for Sillycat83" in museum.get_attribute("title")
         focus.click()
         assert page.locator("#msRemoveDialog").evaluate("dialog => dialog.open")
         assert page.locator("#msRemoveOpen").get_attribute("href") == QUEUE[3]["civitaiUrl"]

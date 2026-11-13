@@ -32,7 +32,7 @@ from discovery.capture import AutoCapture
 from discovery.archive_calendar import build_request as archive_build_request
 from discovery.availability import ArtworkAvailability
 from discovery.timemachine import TimeMachine
-from discovery.musicscout import COLLECTIONS, MUSIC_FOCUS, HubBuilding, MusicScout
+from discovery.musicscout import COLLECTION_BY_KEY, COLLECTIONS, MUSIC_FOCUS, HubBuilding, MusicScout
 from discovery.collectalytics import (Collectalytics, CommentedNotAccepted, NotListed,
                                       NotReviewable, NotWaiting, Unavailable, thumb_allowed,
                                       with_visible_thumbs)
@@ -1619,18 +1619,28 @@ class Handler(BaseHTTPRequestHandler):
                 if any(not MUSIC_SCOUT.served_entry(image_id) for image_id in image_ids):
                     raise ValueError("Only videos Music Scout has shown can be checked")
                 # One collection Civitai fails to list leaves only its icon unknown.
-                collections = {}
+                collections, pending = {}, {}
                 for collection in COLLECTIONS:
-                    try: members = MUSIC_SCOUT.collection_ids(collection["collectionId"])
+                    try:
+                        members = MUSIC_SCOUT.collection_ids(collection["collectionId"])
+                        waiting = MUSIC_SCOUT.collection_pending(collection["collectionId"])
                     except Exception as error:
                         log_internal_error(f"{collection['name']} membership", error)
                         continue
                     collections[collection["key"]] = {str(image_id): image_id in members
                                                       for image_id in image_ids}
-                # Adding is offered for Music Focus alone, and only to its owner.
+                    pending[collection["key"]] = [str(image_id) for image_id in image_ids
+                                                  if image_id in waiting]
+                # Adding is offered for Music Focus alone, and only to its owner. A
+                # collection open to submissions takes them from anyone allowed to write.
                 try: editable = music_focus_editable()
                 except Exception: editable = False
-                self.json_response({"canAdd": editable, "collections": collections})
+                try: submitter = bool(auth_status().get("collectionsWrite"))
+                except RuntimeError: submitter = False
+                self.json_response({"canAdd": editable, "collections": collections,
+                                    "pending": pending,
+                                    "canSubmit": [collection["key"] for collection in COLLECTIONS
+                                                  if submitter and collection.get("submissions")]})
             except ValueError as error: self.json_response({"error": str(error)}, 400)
             except Exception as error: self.internal_error("Music Scout collection status", error)
             return
@@ -2545,6 +2555,42 @@ class Handler(BaseHTTPRequestHandler):
                     MUSIC_SCOUT.mark_member(MUSIC_FOCUS["collectionId"], image_id)
                 self.json_response({"imageId": image_id, "inCollection": in_collection,
                                     "commented": True, "alreadyIn": False})
+                return
+            if parsed.path == "/api/music/submit":
+                # Sends a video to a collection open to submissions. Civitai holds it for
+                # the curator's review; nothing is commented, and only the curator lists it.
+                collection = COLLECTION_BY_KEY.get(str(body.get("collection") or ""))
+                if collection is None or not collection.get("submissions"):
+                    raise ValueError("That collection does not take submissions")
+                try: status = auth_status()
+                except RuntimeError: raise PermissionError(f"Sign in to submit to {collection['name']}")
+                if not status.get("collectionsWrite"):
+                    raise PermissionError("Sign out and back in once to allow collection changes.")
+                image_id = int(body.get("imageId"))
+                if not MUSIC_SCOUT.served_entry(image_id):
+                    raise ValueError("Only videos Music Scout has shown can be submitted")
+                if image_id in MUSIC_SCOUT.collection_ids(collection["collectionId"]):
+                    self.json_response({"imageId": image_id, "inCollection": True,
+                                        "submitted": False, "alreadyIn": True})
+                    return
+                if image_id in MUSIC_SCOUT.collection_pending(collection["collectionId"]):
+                    self.json_response({"imageId": image_id, "inCollection": False,
+                                        "submitted": True, "alreadyIn": False,
+                                        "alreadySubmitted": True})
+                    return
+                try:
+                    SocialClient().add_image_to_collection(image_id, {"id": collection["collectionId"]})
+                except RuntimeError as error:
+                    # Civitai's own refusal is worth showing; a transport failure is not.
+                    log_internal_error(f"{collection['name']} submission", error)
+                    said = "" if isinstance(error, CivitaiHTTPError) else f" Civitai said: {error}"
+                    self.json_response({"error": f"Civitai did not take the submission to "
+                                        f"{collection['name']}.{said} Try submitting it on "
+                                        "Civitai."}, 502)
+                    return
+                MUSIC_SCOUT.mark_pending(collection["collectionId"], image_id)
+                self.json_response({"imageId": image_id, "inCollection": False,
+                                    "submitted": True, "alreadyIn": False})
                 return
             if parsed.path == "/api/collectalytics/comment-preview":
                 # Renders the comment from the queue already read; nothing is sent to Civitai.

@@ -139,14 +139,16 @@ Windows-only.
   Signed in, two curated collections each get two more queues: the
   collection itself in recently added order, and a hub playing the newest videos from
   every creator ever collected there, capped per creator. These are Music Focus 🎸 (with
-  MF hub) and Sillycat83's H3 Movies Museum 🎬 (with Museum hub). Only videos are
+  MF hub) and Sillycat83's Movies Museum 🎬 (with Museum hub). Only videos are
   requested, the next one buffers while the current one plays, and a thumbnail strip shows
   the loaded queue. A video counts as viewed after a second on screen; viewed videos are
   faded in the strip and remembered across sessions, and a queue opens on the first one
   not viewed yet. Reactions sit beside each video, with a 🎸 and a 🎬 marker showing
   whether it is in each collection. Only Music Focus's owner can add to it from here:
   either with the default comment, posted as is, or by copying that comment and doing both
-  steps on Civitai. Removing is left to Civitai. Queues follow the selected viewing levels
+  steps on Civitai. Removing is left to Civitai. Movies Museum is open to submissions:
+  anyone signed in can click its 🎬 marker to submit a video for the curator's review,
+  without a comment. A submitted video shows a dashed marker until it is accepted. Queues follow the selected viewing levels
   and leave out hidden creators and hidden images.
 - Provides **For you**, **Popular**, **New to you**, **Followed first**, and
   **Emerging first** views.

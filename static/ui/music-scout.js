@@ -49,8 +49,12 @@ export function mountMusicScout() {
     loading: null, token: 0, active: false, refresh: false,
     // Reaction state is the account's own, so it is only known once signed in.
     auth: { connected: false, socialWrite: false },
-    // Set by the server: only the collection's owner may add to it from here.
-    canAddFocus: false,
+    // Set by the server: only the collection's owner may add to it from here, while a
+    // collection open to submissions takes them from anyone allowed to write.
+    canAddFocus: false, canSubmit: new Set(),
+    // Per collection key, the reader's submissions still waiting for the curator's review,
+    // as Civitai reports them plus any made since: not in the collection until accepted.
+    submitted: new Map(),
     // The account's reactions per video id: as last known, with local clicks applied at
     // once. `baseline` is what they were when the video's listing counts were read, so a
     // count shown is the listing's count adjusted by the reader's own change since.
@@ -314,29 +318,41 @@ export function mountMusicScout() {
     for (const item of items) params.append('imageId', String(item.id));
     api(`/api/music/collection-status?${params}`).then(result => {
       state.canAddFocus = !!result.canAdd;
+      state.canSubmit = new Set(result.canSubmit || []);
       for (const [key, images] of Object.entries(result.collections || {})) {
         for (const [id, value] of Object.entries(images)) setMember(key, id, value);
+      }
+      for (const [key, ids] of Object.entries(result.pending || {})) {
+        if (!state.submitted.has(key)) state.submitted.set(key, new Set());
+        for (const id of ids) state.submitted.get(key).add(String(id));
       }
       renderReactions();
     }).catch(error => console.warn('Music Scout collection state could not be read', error));
   }
 
-  // Read-only for everyone but Music Focus's owner. Adding always posts a comment, so it
+  // Music Focus can be added to by its owner alone. Adding always posts a comment, so it
   // goes through a confirmation; removing is left to Civitai, where a reason is given.
+  // A collection open to submissions takes a video from anyone, for its curator to review.
   function collectionButton(collection, item) {
     const name = collection.name;
-    const known = state.members.get(collection.key)?.has(String(item.id));
-    const inside = state.members.get(collection.key)?.get(String(item.id)) === true;
+    const id = String(item.id);
+    const known = state.members.get(collection.key)?.has(id);
+    const inside = state.members.get(collection.key)?.get(id) === true;
     const addable = collection.key === state.catalog.musicFocus.key && state.canAddFocus;
+    const submittable = state.canSubmit.has(collection.key);
+    const pending = !inside && !!state.submitted.get(collection.key)?.has(id);
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'ms-collection';
     button.dataset.collection = collection.key;
     button.classList.toggle('selected', inside);
+    button.classList.toggle('pending', pending);
     button.textContent = collection.icon;
-    button.setAttribute('aria-label', inside ? `In ${name}` : `Not in ${name}`);
+    button.setAttribute('aria-label', inside ? `In ${name}` : pending ? `Submitted to ${name}` : `Not in ${name}`);
     const readOnly = !state.auth.connected ? `Sign in to see what is in ${name}`
       : !known ? `Checking ${name}…`
+      : pending ? `Submitted to ${name}, waiting for ${collection.curator || 'the curator'}’s review`
+      : submittable ? (inside ? `In ${name}` : '')
       : !addable ? (inside ? `In ${name}` : `Not in ${name}`) : '';
     if (readOnly) {
       button.classList.add('read-only');
@@ -344,14 +360,22 @@ export function mountMusicScout() {
       button.title = readOnly;
       return button;
     }
+    if (submittable && !addable) {
+      button.title = `Submit to ${name}…`;
+      button.disabled = state.focusing.has(id);
+      button.addEventListener('click', () => openSubmit(collection, item));
+      return button;
+    }
     button.title = inside ? `In ${name}. Removing is done on Civitai.` : `Add to ${name}…`;
-    button.disabled = state.focusing.has(String(item.id));
+    button.disabled = state.focusing.has(id);
     button.addEventListener('click', () => (inside ? openRemove(item) : openAdd(item)));
     return button;
   }
 
   const addDialog = $('msFocusDialog');
   const removeDialog = $('msRemoveDialog');
+  const submitDialog = $('msSubmitDialog');
+  bindDialog(submitDialog, { labelledBy: 'msSubmitTitle', closeButtons: [$('msSubmitClose'), $('msSubmitCancel')] });
   bindDialog(addDialog, { labelledBy: 'msFocusTitle', closeButtons: [$('msFocusClose'), $('msFocusCancel')] });
   bindDialog(removeDialog, { labelledBy: 'msRemoveTitle', closeButtons: [$('msRemoveClose'), $('msRemoveCancel')] });
   let addTarget = null;
@@ -362,7 +386,7 @@ export function mountMusicScout() {
     resumeAfterDialog = !current.paused;
     current.pause();
   }
-  for (const dialog of [addDialog, removeDialog]) {
+  for (const dialog of [addDialog, removeDialog, submitDialog]) {
     dialog.addEventListener('close', () => {
       if (resumeAfterDialog && state.active) play(current);
       resumeAfterDialog = false;
@@ -392,6 +416,53 @@ export function mountMusicScout() {
     addDialog.showModal();
     $('msFocusConfirm').focus();
   }
+
+  let submitTarget = null;
+  function openSubmit(collection, item) {
+    submitTarget = { collection, item };
+    $('msSubmitEyebrow').textContent = collection.name.toUpperCase();
+    $('msSubmitTitle').textContent = `Submit to ${collection.name}?`;
+    $('msSubmitSummary').textContent = `Sends ${item.username}’s video to ${collection.name} for ${collection.curator || 'its curator'} to review. It is listed there once accepted.`;
+    $('msSubmitOpen').href = item.civitaiUrl;
+    $('msSubmitError').classList.add('hidden');
+    $('msSubmitConfirm').disabled = false;
+    pauseForDialog();
+    submitDialog.showModal();
+    $('msSubmitConfirm').focus();
+  }
+
+  $('msSubmitOpen').addEventListener('click', () => {
+    resumeAfterDialog = false;
+    submitDialog.close();
+  });
+
+  $('msSubmitConfirm').addEventListener('click', async () => {
+    if (!submitTarget) return;
+    const { collection, item } = submitTarget;
+    const id = String(item.id);
+    state.focusing.add(id);
+    $('msSubmitConfirm').disabled = true;
+    renderReactions();
+    try {
+      const result = await api('/api/music/submit', { method: 'POST',
+        body: JSON.stringify({ imageId: item.id, collection: collection.key }) });
+      if (result.inCollection) setMember(collection.key, id, true);
+      else {
+        if (!state.submitted.has(collection.key)) state.submitted.set(collection.key, new Set());
+        state.submitted.get(collection.key).add(id);
+      }
+      submitDialog.close();
+      message(result.alreadyIn ? `That video is already in ${collection.name}; nothing was submitted.`
+        : result.alreadySubmitted ? `You already submitted that video to ${collection.name}; it is waiting for review.` : '');
+    } catch (error) {
+      $('msSubmitError').textContent = error.message;
+      $('msSubmitError').classList.remove('hidden');
+      $('msSubmitConfirm').disabled = false;
+    } finally {
+      state.focusing.delete(id);
+      renderReactions();
+    }
+  });
 
   function openRemove(item) {
     $('msRemoveOpen').href = item.civitaiUrl;
