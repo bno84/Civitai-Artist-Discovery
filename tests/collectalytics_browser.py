@@ -241,6 +241,12 @@ try:
         dialog.locator("#caAcceptEdit").click()
         assert dialog.locator("#caComment").input_value() == CREATOR_COMMENT
         assert dialog.locator("#caCommentLabel").text_content() == "Comment for a creator’s own submission"
+        # Resetting a self-submission's comment restores the one without thanks.
+        dialog.locator("#caComment").fill("Edited")
+        dialog.locator("#caCommentReset").click()
+        assert dialog.locator("#caComment").input_value() == CREATOR_COMMENT
+        page.wait_for_function("() => document.getElementById('caAcceptPreview').textContent === " + json.dumps(CREATOR_COMMENT))
+        assert json.loads(page.evaluate("() => localStorage.getItem('civitaiCollectalyticsComment')")) == {str(FOCUS): "Cheers {submitter}"}
         # An empty comment accepts without one, and says so.
         dialog.locator("#caComment").fill("")
         page.wait_for_function("() => document.getElementById('caAcceptTitle').textContent === 'Accept without a comment?' && !document.getElementById('caAcceptConfirm').disabled")
