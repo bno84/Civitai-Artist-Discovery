@@ -173,6 +173,10 @@ assert re.findall(r'"mention:(\d+)"', rendered) == ["77"], rendered
 generic = comment_html(DEFAULT_COMMENT, {"id": OWNED, "name": "Picks"}, {"submitterId": 5, "submitter": "Sam"})
 assert generic.startswith('<p>It is added to <a ') and generic.endswith('@Sam</span> for the recommendation.</p>'), generic
 assert default_comment(OWNED) == DEFAULT_COMMENT
+# A creator who submits their own work is not thanked for recommending it.
+assert default_comment(OWNED, by_creator=True) == "It is added to [**{collection}**]."
+assert comment_html(default_comment(focus["id"], by_creator=True), focus,
+                    {"submitterId": 11, "submitter": "Alpha", "creatorId": 11, "creator": "Alpha"}) == MUSIC_FOCUS_COMMENT
 # Typed markup is escaped; only the template's own syntax becomes markup.
 rendered = comment_html('<b>Hi</b> {creator} [**{collection}** & co] {unknown}\n\n  second  ',
                         {"id": 5, "name": "A<B"}, {"creatorId": 3, "creator": 'x"y'})
@@ -360,6 +364,7 @@ with patch.object(server, "COLLECTALYTICS", stats), \
         assert queue["pages"] == 2 and not queue["truncated"] and queue["acceptsSubmissions"], queue
         assert queue["collection"]["write"] == "Review", queue
         assert queue["defaultComment"] == DEFAULT_COMMENT and queue["canAccept"] is False, queue
+        assert queue["creatorComment"] == "It is added to [**{collection}**].", queue
         submitters = {item["itemId"]: (item["submitterId"], item["submitter"]) for item in queue["items"]}
         assert submitters == {21: (77, "Friend"), 22: (11, "Alpha"), 23: (None, None)}, submitters
         assert queue["items"][0]["submitterProfileUrl"] == "https://civitai.red/user/Friend", queue

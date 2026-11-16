@@ -59,9 +59,11 @@ REPORTS = {
 }
 
 # Waiting for review: someone already collected, a newcomer, and one not rated yet.
-DEFAULT_COMMENT = "Your track has [**Music Focus** 🎸]. Thanks {submitter} for the recommendation."
+CREATOR_COMMENT = "Your track has [**Music Focus** 🎸]."
+DEFAULT_COMMENT = CREATOR_COMMENT + " Thanks {submitter} for the recommendation."
 REVIEW = {"collection": COLLECTIONS[0], "pages": 1, "truncated": False, "acceptsSubmissions": True,
           "fetchedAt": NOW.isoformat(), "canAccept": True, "defaultComment": DEFAULT_COMMENT,
+          "creatorComment": CREATOR_COMMENT,
           "items": [{**item(40, 0, 1), "collectionItemId": 9940, "submitterId": 100,
                      "submitter": "Composer0", "submitterProfileUrl": "https://civitai.red/user/Composer0"},
                     {**item(41, 50, 30), "collectionItemId": 9941, "submitterId": 77,
@@ -229,9 +231,17 @@ try:
         page.wait_for_timeout(300)
         assert dialog.locator("#caAcceptConfirm").is_disabled()
         dialog.locator("#caAcceptClose").click()
-        # An empty comment accepts without one, and says so.
+        # A creator's own submission is not thanked: it suggests the comment without thanks,
+        # kept apart from the edited thanks comment.
         page.locator("#caReview .ca-review-row").nth(2).locator(".ca-accept").click()
+        dialog.locator("#caAcceptPreview p[data-item='9940']").wait_for()
+        assert dialog.locator("#caAcceptPreview").text_content() == CREATOR_COMMENT
+        assert dialog.locator("#caAcceptTitle").text_content() == "Accept with a comment?"
+        assert "mentioning" not in dialog.locator("#caAcceptSummary").text_content()
         dialog.locator("#caAcceptEdit").click()
+        assert dialog.locator("#caComment").input_value() == CREATOR_COMMENT
+        assert dialog.locator("#caCommentLabel").text_content() == "Comment for a creator’s own submission"
+        # An empty comment accepts without one, and says so.
         dialog.locator("#caComment").fill("")
         page.wait_for_function("() => document.getElementById('caAcceptTitle').textContent === 'Accept without a comment?' && !document.getElementById('caAcceptConfirm').disabled")
         assert dialog.locator("#caAcceptPreview").text_content() == "No comment is posted."
@@ -241,9 +251,11 @@ try:
         assert page.locator("#caReview .ca-review-row").nth(1).locator(".ca-accept").text_content() == "Review item"
         page.locator("#caReview .ca-review-row").nth(1).locator(".ca-accept").click()
         dialog.locator("#caAcceptEdit").click()
+        assert dialog.locator("#caComment").input_value() == "Cheers {submitter}"
+        assert dialog.locator("#caCommentLabel").text_content() == "Comment for this collection"
         dialog.locator("#caCommentReset").click()
         assert dialog.locator("#caComment").input_value() == DEFAULT_COMMENT
-        assert page.evaluate("() => localStorage.getItem('civitaiCollectalyticsComment')") == "{}"
+        assert json.loads(page.evaluate("() => localStorage.getItem('civitaiCollectalyticsComment')")) == {f"{FOCUS}:creator": ""}
         dialog.locator("#caAcceptCancel").click()
         # The creator check opens on whoever was added last.
         assert page.locator("#caCreator").input_value() == ITEMS[0]["creator"]

@@ -11,6 +11,7 @@ import { bindDialog } from './dialog.js';
 const STATE_KEY = 'civitaiCollectalytics';
 const SNIPPET_KEY = 'civitaiCollectalyticsSnippet';
 // The thanks comment, by collection id, kept only where it differs from the default.
+// The comment for a creator's own submission, which thanks nobody, is under "<id>:creator".
 const COMMENT_KEY = 'civitaiCollectalyticsComment';
 const TOP_CREATORS = 20;
 const RECENT = 15;
@@ -357,7 +358,7 @@ export function mountCollectalytics() {
     text.append(profileLink(item.creator || 'Unknown creator', item.profileUrl, 'ca-creator-link'));
     const submitter = element('small', 'ca-review-submitter');
     if (!item.submitter) submitter.textContent = 'Submitter not reported by Civitai';
-    else if (item.submitterId != null && item.submitterId === item.creatorId) submitter.textContent = 'Submitted by the creator';
+    else if (byCreator(item)) submitter.textContent = 'Submitted by the creator';
     else submitter.append('Submitted by ', profileLink(item.submitter, item.submitterProfileUrl));
     text.append(submitter);
     text.append(element('small', '', item.added ? `Added ${ago(item.added, now)} · ${formatStamp(item.added)}` : 'No added date'));
@@ -396,10 +397,12 @@ export function mountCollectalytics() {
   let acceptTarget = null, previewToken = 0, previewTimer = 0;
 
   function openAccept(item, row) {
-    acceptTarget = { item, row, review: state.review, posted: false };
+    acceptTarget = { item, row, review: state.review, posted: false, byCreator: byCreator(item) };
     const { review } = state;
     $('caAcceptEyebrow').textContent = `REVIEW QUEUE · ${review.collection.name.toUpperCase()}`;
-    $('caComment').value = commentTemplate();
+    $('caCommentLabel').textContent = acceptTarget.byCreator
+      ? 'Comment for a creator’s own submission' : 'Comment for this collection';
+    $('caComment').value = commentTemplate(acceptTarget);
     $('caAcceptEditor').classList.add('hidden');
     $('caAcceptEdit').textContent = 'Edit';
     $('caAcceptCopy').textContent = 'Copy comment';
@@ -418,7 +421,8 @@ export function mountCollectalytics() {
     const commenting = !!template.trim();
     const what = item.mediaType === 'video' ? 'video' : item.kind === 'image' ? 'image' : item.kind;
     const thanked = /\{submitter\}/.test(template);
-    $('caAcceptTitle').textContent = commenting ? 'Accept with thanks?' : 'Accept without a comment?';
+    $('caAcceptTitle').textContent = !commenting ? 'Accept without a comment?'
+      : thanked ? 'Accept with thanks?' : 'Accept with a comment?';
     $('caAcceptSummary').textContent = commenting
       ? `Posts this comment on ${item.creator || 'the creator'}’s ${what}${thanked && item.submitter ? `, mentioning ${item.submitter} so Civitai notifies them` : ''}, then accepts it into ${state.review.collection.name}.`
       : `Accepts ${item.creator || 'the creator'}’s ${what} into ${state.review.collection.name}. Civitai tells the submitter.`;
@@ -509,16 +513,31 @@ export function mountCollectalytics() {
   });
   acceptDialog.addEventListener('close', () => { acceptTarget = null; clearTimeout(previewTimer); });
 
-  function commentTemplate() {
-    const stored = readJSON(localStorage, COMMENT_KEY)[state.review.collection.id];
-    return typeof stored === 'string' ? stored : state.review.defaultComment;
+  // Civitai names both, so a self-submission is known; thanks are for someone else's pick.
+  function byCreator(item) {
+    return item.submitterId != null && item.submitterId === item.creatorId;
   }
 
-  function storeComment() {
+  // Each kind of comment has its own default and its own stored edit.
+  function commentKind(target) {
+    const { review } = target;
+    return target.byCreator
+      ? { key: `${review.collection.id}:creator`, fallback: review.creatorComment ?? review.defaultComment }
+      : { key: String(review.collection.id), fallback: review.defaultComment };
+  }
+
+  function commentTemplate(target) {
+    const { key, fallback } = commentKind(target);
+    const stored = readJSON(localStorage, COMMENT_KEY)[key];
+    return typeof stored === 'string' ? stored : fallback;
+  }
+
+  function storeComment(target) {
+    const { key, fallback } = commentKind(target);
     const all = readJSON(localStorage, COMMENT_KEY);
     const value = $('caComment').value;
-    if (value === state.review.defaultComment) delete all[state.review.collection.id];
-    else all[state.review.collection.id] = value;
+    if (value === fallback) delete all[key];
+    else all[key] = value;
     localStorage.setItem(COMMENT_KEY, JSON.stringify(all));
   }
 
@@ -995,16 +1014,16 @@ export function mountCollectalytics() {
     localStorage.setItem(SNIPPET_KEY, JSON.stringify(all));
     renderSnippet();
   });
-  // An edit is the collection's comment from then on.
+  // An edit is the collection's comment for that kind of submission from then on.
   function commentEdited() {
-    if (!state.review) return;
-    storeComment();
+    if (!acceptTarget) return;
+    storeComment(acceptTarget);
     refreshAccept();
   }
   $('caComment').addEventListener('input', commentEdited);
   $('caCommentReset').addEventListener('click', () => {
-    if (!state.review) return;
-    $('caComment').value = state.review.defaultComment;
+    if (!acceptTarget) return;
+    $('caComment').value = commentKind(acceptTarget).fallback;
     commentEdited();
   });
   $('caCopyRich').addEventListener('click', () => copy(true));

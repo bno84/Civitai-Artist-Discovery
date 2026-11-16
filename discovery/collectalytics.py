@@ -67,12 +67,14 @@ COMMENT_MAX = 2000
 # data-type, data-id and data-label, and the new-mention notification job finds the
 # recipient by matching "mention:ID" in the stored comment.
 # Each line is a paragraph. The collection's standard comment comes first, the thanks after.
+# A creator who submits their own work gets the standard comment alone.
 THANKS = "Thanks {submitter} for the recommendation."
-DEFAULT_COMMENT = "It is added to [**{collection}**]. " + THANKS
+DEFAULT_STANDARD = "It is added to [**{collection}**]."
+DEFAULT_COMMENT = f"{DEFAULT_STANDARD} {THANKS}"
 STANDARD_COMMENTS = {
-    # Music Focus 🎸: the comment Music Scout posts on every video it adds, then the thanks.
+    # Music Focus 🎸: the comment Music Scout posts on every video it adds.
     17980935: ("Your track has [**Music Focus** 🎸] and is added to the collection! 🎧 Give it "
-               "a listen and share more jams if you like. " + THANKS),
+               "a listen and share more jams if you like."),
 }
 # Every level, so the counts match the collection rather than the reader's filters.
 # Thumbnails are still limited to the reader's levels.
@@ -102,8 +104,10 @@ class CommentedNotAccepted(Exception):
     """The comment was posted but accepting failed; retrying would post it twice."""
 
 
-def default_comment(collection_id: int) -> str:
-    return STANDARD_COMMENTS.get(int(collection_id), DEFAULT_COMMENT)
+def default_comment(collection_id: int, by_creator: bool = False) -> str:
+    """The suggested comment. Thanks are for someone else's recommendation, not the creator's."""
+    standard = STANDARD_COMMENTS.get(int(collection_id), DEFAULT_STANDARD)
+    return standard if by_creator else f"{standard} {THANKS}"
 
 
 def _mention(user_id, name) -> str:
@@ -361,6 +365,7 @@ class Collectalytics:
             queue = {"collection": choice, "items": items, "pages": pages,
                      "truncated": truncated, "acceptsSubmissions": choice["write"] == "Review",
                      "defaultComment": default_comment(collection_id),
+                     "creatorComment": default_comment(collection_id, by_creator=True),
                      "fetchedAt": datetime.now(timezone.utc).isoformat()}
             self.queues[(user_id, collection_id)] = (time.monotonic(), queue)
             self._list(user_id, items)
