@@ -1,10 +1,21 @@
 // One transport contract for all pages. Callers may pass AbortSignal via options.
 const controlsChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('discovery-content-controls-v1') : null;
+let sharedSettingsRead = 0;
 if (controlsChannel) controlsChannel.onmessage = ({data}) => {
   if (data?.phase === 'changing') window.dispatchEvent(new Event('content-controls-changing'));
   if (data?.phase === 'changed') {
-    if (Array.isArray(data.settings?.browsingLevels)) window.dispatchEvent(new CustomEvent('shared-settings-changed', {detail:data.settings}));
-    window.dispatchEvent(new Event('community-controls-changed'));
+    if (Array.isArray(data.settings?.browsingLevels)) {
+      const revision = ++sharedSettingsRead;
+      // Replies to independent saves can arrive out of order. A broadcast is a
+      // notification to read current settings, not authority to restore its snapshot.
+      api('/api/settings').then(settings => {
+        if (revision !== sharedSettingsRead) return;
+        window.dispatchEvent(new CustomEvent('shared-settings-changed',{detail:settings}));
+        window.dispatchEvent(new Event('community-controls-changed'));
+      }).catch(() => {
+        if (revision === sharedSettingsRead) window.dispatchEvent(new Event('community-controls-changed'));
+      });
+    } else window.dispatchEvent(new Event('community-controls-changed'));
     if (data.artistHidden) window.dispatchEvent(new Event('shared-artist-hidden'));
   }
 };

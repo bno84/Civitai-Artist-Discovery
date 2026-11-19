@@ -9,9 +9,9 @@ def pill(*, environment):
     """Always-visible Community selection beside the version, for packages and source."""
     if environment == 'production':
         return ('<span id="appChannel" class="app-channel app-channel-public" '
-                'title="Public Community on the Production service">public</span>')
-    return ('<span id="appChannel" class="app-channel app-channel-beta" '
-            'title="Development version with a separate beta Community">beta</span>')
+                'title="Public Community on the Production service">Public Community</span>')
+    return ('<span id="appChannel" class="app-channel app-channel-development" '
+            'title="Separate Community on the Development service">Development Community</span>')
 
 
 def render(*, frozen, environment):

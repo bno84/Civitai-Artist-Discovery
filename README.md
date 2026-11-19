@@ -1,15 +1,17 @@
 # Civitai Artist Discovery
 
-## Production stable 3.0.1
+## Production stable 3.0.2
 
-This checkout prepares the 3.0.1 maintenance release; publication requires separate
-owner approval. Published stable Windows packages connect to Production Community. Normal
+[3.0.2 changes and update instructions](docs/3.0.2-release-notes.md).
+
+This checkout contains the owner-accepted 3.0.2 reliability and usability release.
+Stable Windows packages connect to Production Community. Normal
 Civitai sign-in automatically enrolls verified users; no invitation or separate
 registration is required. The separate activity Registry remains disabled.
 
 **Linux/source users:** use `python server.py --stable` after installing runtime
 dependencies, or `uv run --with-requirements requirements.txt server.py --stable`.
-This explicitly selects stable 3.0.1, the reviewed Production services, and a
+This explicitly selects stable 3.0.2, the reviewed Production services, and a
 separate local profile. Plain `python server.py` remains the beta/Development
 source entry point, including a local Community ledger by default. Checking out a
 stable tag alone does not select Production. See [Linux stable source setup](docs/3.0-linux-stable-source.md).
@@ -454,7 +456,7 @@ separate concepts; viewing filters never redownload an already-covered level.
 Creator- and image-level exclusions are applied from the account data Civitai returns.
 The Filters menu can independently pause personal tag filters, hidden and blocked
 account filters, or hidden artworks (including images hidden after reporting them).
-All three switches default to on. Rating-related exclusions follow browsing levels.
+All three switches default to on and preserve existing filtering. Browsing levels always apply.
 Because the daily listing feed does not include tags, enabling tag filters verifies tags
 in small batches as artwork approaches the screen and before assigning its preview URL. An image
 matching a hidden Civitai tag is removed without being displayed; the same check is made

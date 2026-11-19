@@ -155,7 +155,7 @@ class CommunityTests(unittest.TestCase):
         expected = set(range(1, 8001))
         self.assertEqual(expected, profile.excluded_image_ids())
         for image in expected:
-            self.assertEqual(['hiddenTag'], profile.image_exclusions(image))
+            self.assertEqual(['hiddenArtwork','hiddenTag'], profile.image_exclusions(image))
         # Bound work, not wall-clock time: bulk and individual reads share one index.
         self.assertEqual(8000, pairs.visits)
         self.assertEqual(set(), replace(profile, apply_tag_filters=False).excluded_image_ids())
@@ -182,7 +182,7 @@ class CommunityTests(unittest.TestCase):
                 {'id': 1010, 'hidden': False}, {'id': 1011, 'tagId': False}]}
         profile = content_profile(hidden, (1, 2))
         unknown = {1001, 1002, 1003, 1004, 1009, 1011, 1012}
-        self.assertEqual(unknown | {1000, 1005, 1006}, profile.excluded_image_ids())
+        self.assertEqual(unknown | {1000, 1005, 1006, 1008}, profile.excluded_image_ids())
         paused = replace(profile, apply_tag_filters=False, apply_image_filters=False,
                          levels=frozenset((1, 2, 4, 8, 16)))
         self.assertEqual(unknown, paused.excluded_image_ids())
@@ -190,7 +190,7 @@ class CommunityTests(unittest.TestCase):
             self.assertEqual(['incompleteMetadata'], paused.image_exclusions(image))
 
     def test_upstream_compact_implicit_and_bidirectional_blocks(self):
-        hidden={'__v':2,'hiddenUsers':[], 'hiddenTags':[{'id':11,'name':'landscape','hidden':True}], 'hiddenImages':[],
+        hidden={'__v':2,'hiddenUsers':[], 'hiddenTags':[], 'hiddenImages':[],
                 'hiddenImagesImplicit':[{'id':1001,'tagId':11,'hidden':True}],
                 'blockedUsers':[{'id':102,'username':'DemoArtist2','hidden':True}],
                 'blockedByUsers':[{'id':103,'username':'DemoArtist3','hidden':True}]}

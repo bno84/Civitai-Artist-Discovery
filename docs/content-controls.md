@@ -24,9 +24,12 @@ which action created a record. Selected browsing levels and hosted Community acc
 policy still apply even when all three switches are off.
 
 Civitai also returns implicit image exclusions with a `tagId`. These are retained
-separately: personal-tag votes follow the tag switch; rating-tag votes are excluded only
-when their rating exceeds the selected browsing ceiling. Moderated tags carrying
-`nsfwLevel` are not imported as personal hidden tags.
+separately. With tag and artwork switches both on, every active implicit hide remains
+excluded, including inactive-topic votes and rating votes already covered by selected
+levels. This preserves the previous evaluator. When a switch is explicitly paused,
+known tag votes follow the tag switch and rating votes above the selected browsing
+ceiling remain excluded. Imported hidden tags carrying `nsfwLevel` retain their
+previous hidden-tag interpretation; this release does not silently reclassify saved rules.
 
 Implicit image hides with a missing or invalid `tagId`, or a tag absent from the imported
 tag metadata, stay excluded as incomplete metadata. Local switches cannot relax these

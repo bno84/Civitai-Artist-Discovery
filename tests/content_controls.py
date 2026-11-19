@@ -103,15 +103,15 @@ with tempfile.TemporaryDirectory(prefix="civitai-controls-", ignore_cleanup_erro
                 db.execute('INSERT INTO creator_images(username_key,position,image_id,username,created_at,url) '
                            'VALUES(?,?,?,?,?,?)', (name.casefold(), position, image_id, name, day, pixel))
 
-    # Rating votes are not personal hidden tags or direct image hides.
+    # Preserve default-on legacy rating-tag and implicit-image exclusions.
     rating_controls = {**HIDDEN, 'hiddenTags': HIDDEN['hiddenTags'] + [
         {'id': 99, 'name': 'rating-topic', 'nsfwLevel': 16}],
         'hiddenImagesImplicit': [{'id': 9303, 'tagId': 99}]}
     taste.SocialClient.query = lambda *args: rating_controls
     store.import_hidden_preferences()
-    assert 'rating-topic' not in store.hidden_tag_names()
+    assert 'rating-topic' in store.hidden_tag_names(), 'Default-on imported tag semantics must remain compatible'
     assert 9303 in store.hidden_image_ids(levels=(1, 2), include_tags=False)
-    assert 9303 not in store.hidden_image_ids(levels=(1, 2, 4, 8, 16))
+    assert 9303 in store.hidden_image_ids(levels=(1, 2, 4, 8, 16)), "Default-on implicit hides remain excluded"
     assert 9302 not in store.hidden_image_ids(include_images=False)
     taste.SocialClient.query = lambda *args: HIDDEN
     store.import_hidden_preferences()

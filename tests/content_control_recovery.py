@@ -78,6 +78,13 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(set(), self.store.hidden_image_ids(include_images=False, include_tags=False))
             self.assertEqual(1, query.call_count)
 
+    def test_thread_start_failure_still_serves_legacy_mirror(self):
+        with patch('discovery.taste.threading.Thread.start',side_effect=RuntimeError('Synthetic thread unavailable')) as start:
+            self.assertEqual({101,102},self.store.hidden_image_ids())
+            self.assertEqual({101,102},self.store.hidden_image_ids())
+            self.assertEqual(start.call_count,1)
+            self.assertIsNone(self.store._hidden_preferences_thread)
+
     def test_community_keeps_legacy_exclusions_while_offline(self):
         import server
         settings = AppSettings(Path(self.temporary.name) / 'settings.json')

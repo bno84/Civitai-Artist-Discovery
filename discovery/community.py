@@ -156,6 +156,10 @@ class ContentProfile:
         reasons = []
         if self.apply_image_filters and image in self.images: reasons.append('hiddenArtwork')
         votes = self._image_votes.get(image, set())
+        # Default-on compatibility: the prior evaluator excluded every active
+        # implicit hide, including inactive-topic and already-selected rating votes.
+        if self.apply_tag_filters and self.apply_image_filters and votes and 'hiddenArtwork' not in reasons:
+            reasons.append('hiddenArtwork')
         if self.apply_tag_filters and votes & self.tag_ids: reasons.append('hiddenTag')
         if votes & self._restricted_rating_tags:
             reasons.append('ratingRestriction')
@@ -222,8 +226,8 @@ def content_profile(hidden, levels):
             known_tag_ids=frozenset(positive_id(x['id']) for x in tags),
             rating_tags=frozenset((positive_id(x["id"]),positive_id(x["nsfwLevel"]))
                 for x in tags if x.get("nsfwLevel")),
-            tags=frozenset(x["name"].casefold() for x in tags if x.get("hidden") is not False and not x.get("nsfwLevel")),
-            tag_ids=frozenset(positive_id(x["id"]) for x in tags if x.get("hidden") is not False and not x.get("nsfwLevel")),
+            tags=frozenset(x["name"].casefold() for x in tags if x.get("hidden") is not False),
+            tag_ids=frozenset(positive_id(x["id"]) for x in tags if x.get("hidden") is not False),
             blocked_creators=frozenset(positive_id(x['id']) for x in hidden['blockedByUsers']+hidden['blockedUsers'] if x.get('hidden') is not False),
             blocked_usernames=frozenset(str(x.get('username','')).casefold() for x in hidden['blockedByUsers']+hidden['blockedUsers'] if x.get('hidden') is not False))
     except (KeyError, TypeError, AttributeError, CommunityError):

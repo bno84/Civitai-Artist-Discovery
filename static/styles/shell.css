@@ -11,11 +11,13 @@ body { background: var(--bg); }
 }
 .source-launch-dismiss:hover { background: rgba(255, 255, 255, .08); }
 .app-channel {
-  flex: none; padding: 2px 7px; border: 1px solid; border-radius: 999px; font-size: 10px; font-weight: 750;
-  line-height: 1.35; letter-spacing: .025em; white-space: nowrap; text-transform: uppercase;
+  flex: none; font-size: 10px; font-weight: 750; line-height: 1.35; white-space: nowrap;
 }
 .app-channel-public { border-color: #478b85; background: #1d302f; color: #a5eee3; }
-.app-channel-beta { border-color: #8e7642; background: #302b21; color: #f4d89f; }
+.app-channel-development { border-color: #8e7642; background: #302b21; color: #f4d89f; }
+.app-build-info { display: inline-flex; flex: none; align-items: center; gap: 7px; padding: 3px 8px; border: 1px solid; border-radius: 999px; }
+.app-build-info .app-version { padding: 0; border: 0; background: transparent; color: inherit; }
+.app-build-info .app-channel { padding-left: 7px; border-left: 1px solid currentColor; }
 .source-launch-notice strong { display: block; color: #a5eee3; font-size: 17px; }
 .source-launch-notice p { margin: 7px 0 0; }
 .source-launch-notice > code { display: block; margin-top: 10px; padding: 10px 12px; border-radius: 6px; background: #141f20; }
@@ -52,22 +54,18 @@ body > .app-header { min-height: 64px; padding: 10px 20px; gap: 20px; background
 .gallery-navigation #selectedDate { font-size: 14px; }
 .gallery-navigation #summary { margin-left: auto; font-size: 12px; }
 .command-bar .segment-toolbar { position: static; top: auto; flex: 1 1 auto; min-width: 0; padding: 0; justify-content: flex-end; flex-wrap: nowrap; background: transparent; border: 0; backdrop-filter: none; gap: 8px; }
-/* When the tabs leave less room than the calendar, view and filters controls
-   need, those controls take their own row rather than being squeezed under one another. */
+/* Keep navigation on one row and let the gallery controls wrap as a group. */
 @media (min-width: 701px) {
   .view-tabs.command-bar { flex-wrap: wrap; }
   .command-bar .segment-toolbar { flex-basis: 360px; }
-  /* The result summary gives way first; it already truncates. */
   .command-bar .segment-toolbar > :not(.active-filters) { flex-shrink: 0; }
 }
-/* Narrow windows above the phone layout: tighter tabs keep all six on one row, and
-   below 900px the labels alone, since the icons no longer fit beside them. */
 @media (min-width: 701px) and (max-width: 1099px) {
-  .view-tabs > button { padding: 6px 8px; gap: 5px; font-size: 13px; }
+  .view-tabs > button[aria-pressed] { padding: 6px 8px; gap: 5px; font-size: 13px; }
 }
 @media (min-width: 701px) and (max-width: 899px) {
   .view-tabs.command-bar { padding-inline: 12px; gap: 4px; }
-  .view-tabs > button > svg.ui-icon { display: none; }
+  .view-tabs > button[aria-pressed] > svg.ui-icon { display: none; }
 }
 .segment-toolbar label { margin-left: 0; }
 .ui-field { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
@@ -110,3 +108,10 @@ main { padding: 18px 20px 60px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; }
 }
+
+/* Owner-approved transparent B artwork in the upper-left header. */
+body > .app-header{min-height:96px;padding:12px 20px 11px}
+.app-brand h1{display:flex;align-items:center;min-width:0}
+.app-brand .app-logo{width:216px;height:auto;max-width:100%;display:block}
+.app-brand .app-title-row{column-gap:10px;align-items:center}
+@media(max-width:700px){body > .app-header{min-height:64px;padding:10px 12px}.app-brand .app-logo{width:156px}}
